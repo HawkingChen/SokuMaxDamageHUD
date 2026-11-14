@@ -12,6 +12,13 @@ struct AttackOrigin {
     bool valid() const { return action >= 300 && action < 690 && instance; }
     bool operator==(const AttackOrigin &) const = default;
 };
+// A frame's total HP/combo delta cannot be split into move damage when
+// independently spawned projectiles and body attacks may both contribute.
+// Keep that total *unranked* rather than inventing a single-cast record.
+struct HitAttributionResult {
+    AttackOrigin origin{};
+    bool mixed = false;
+};
 struct ActorContact {
     int action = 0, sequence = 0;
     unsigned animationFrame = 0;
@@ -79,9 +86,9 @@ class HitAttribution {
     }
 public:
     void reset() { objects_.clear();endedParents_.clear();previousActor_={};actorOrigin_={};serial_=0;tick_=0; }
-    AttackOrigin observe(const ActorContact &before,const ActorContact &after,
-                         const std::vector<ProjectileContact> &pre,
-                         const std::vector<ProjectileContact> &post) {
+    HitAttributionResult observeDetailed(const ActorContact &before,const ActorContact &after,
+                                         const std::vector<ProjectileContact> &pre,
+                                         const std::vector<ProjectileContact> &post) {
         ++tick_;
         for(auto it=endedParents_.begin();it!=endedParents_.end();) {
             if(tick_-it->second.tick>kParentGraceFrames)it=endedParents_.erase(it);
@@ -143,12 +150,20 @@ public:
                 endedParents_[id]={parent.sample,parent.origin,tick_};
         }
         objects_=std::move(next);
-        if(unknownHit||hits.size()>1)return {};
-        if(hits.size()==1)return hits.front();
+        if(unknownHit || hits.size()>1)return {{},true};
+        if(hits.size()==1) {
+            // CRITICAL: the sole *detected* contact is not necessarily the
+            // sole source of total damage. Suika's delayed 5C (410) may have
+            // an unresolved active hitbox while j6A (307) reports its hit.
+            // Their combined 3057 must NEVER be credited to j6A alone.
+            for(const auto &candidate:possible)
+                if(candidate!=hits.front())return {{},true};
+            return {hits.front(),false};
+        }
         // Some projectiles disappear in the same update as their last hit.
         // Use the sole evidenced active cast; never choose between two casts.
-        if(possible.size()==1)return possible.front();
-        if(!possible.empty())return {};
+        if(possible.size()==1)return {possible.front(),false};
+        if(!possible.empty())return {{},true};
         // Scripted SC follow-up animations (650..669) can deal damage even
         // without an ordinary contact box transition. When no other owned
         // attacker has an available collision source, keep the same cast.
@@ -156,30 +171,46 @@ public:
         // fallback for idle frames or independent projectiles.
         if(isSpellFollowupAction(after.action) && afterOrigin.valid() &&
            afterOrigin.action==canonicalAttackAction(after.action))
-            return afterOrigin;
+            return {afterOrigin,false};
         // Final cinematic strike may coincide with 659 -> idle. Only
         // attribute the frame's hit to the still-active preceding SC
         // ALT_EFFECT; no long-lasting "recently used SC" fallback.
         if(isSpellFollowupAction(before.action) && beforeOrigin.valid() &&
            beforeOrigin.action==canonicalAttackAction(before.action))
-            return beforeOrigin;
+            return {beforeOrigin,false};
         return {};
+    }
+    AttackOrigin observe(const ActorContact &before,const ActorContact &after,
+                         const std::vector<ProjectileContact> &pre,
+                         const std::vector<ProjectileContact> &post) {
+        return observeDetailed(before,after,pre,post).origin;
     }
 };
 
 struct ComboReading { int hits=0,damage=0; bool freshTarget=false; };
 inline int observedDamage(int beforeHP,int afterHP,ComboReading before,ComboReading after) {
-    int damage=0;
+    // Prefer the actual HP decrease for this engine update. Combo damage is
+    // a *cumulative* value, not a fresh per-action amount; on combo reset or
+    // re-stand, assigning after.damage to the newest attack can re-credit
+    // the previous projectile's entire combo (e.g. Suika 5C + j6A).
+    const int hpDamage=beforeHP>afterHP?beforeHP-afterHP:0;
+    if(hpDamage>0)return hpDamage;
+    int comboDelta=0;
     if(after.hits>0 && after.damage>0 &&
        (after.hits!=before.hits || after.damage!=before.damage)) {
-        if(before.freshTarget||after.hits<=before.hits||after.damage<before.damage)
-            damage=after.damage;
-        else damage=after.damage-before.damage;
+        if(before.hits==0)comboDelta=after.damage;
+        else if(before.freshTarget && after.hits<=before.hits &&
+                after.damage<before.damage)
+            comboDelta=after.damage; // proven new combo after target recovered
+        else if(!before.freshTarget &&
+                after.hits>before.hits && after.damage>before.damage)
+            comboDelta=after.damage-before.damage;
+        // Existing combo counters that reset/decrease are not trustworthy
+        // as a one-frame damage delta when HP hasn't changed.
     }
-    // Includes chip; combo totals also retain hits when Practice restores HP
-    // within this engine update. Stale combo totals alone never add damage.
-    if(damage<=0)damage=beforeHP>afterHP?beforeHP-afterHP:0;
-    if(beforeHP>0&&damage>beforeHP)damage=beforeHP;
-    return damage;
+    // Practice may restore HP inside the original update: fall back to
+    // a monotonic combo increment, preserving this earlier behavior.
+    if(beforeHP>0 && comboDelta>beforeHP)comboDelta=beforeHP;
+    return comboDelta;
 }
 } // namespace whm
