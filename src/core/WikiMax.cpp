@@ -85,8 +85,9 @@ int rescaleWikiMax(const WikiMax &entry, const Fighter &own, const Fighter &enem
     if (entry.neutralMax <= 0) return 0;
     const double type = entry.kind == MoveKind::Spell ? own.spellMultiplier :
                         entry.kind == MoveKind::Skill ? own.skillMultiplier : 1.0;
-    const double weather = (entry.kind == MoveKind::Spell && own.activeWeather == 1) ||
-                           (entry.kind == MoveKind::Skill && own.activeWeather == 4) ? 1.25 : 1.0;
+    const double weather = !own.typeIncludesWeather && (
+        (entry.kind == MoveKind::Spell && own.activeWeather == 1) ||
+        (entry.kind == MoveKind::Skill && own.activeWeather == 4)) ? 1.25 : 1.0;
     const double multiplier = own.attack * enemy.defense * type * weather;
     if (!std::isfinite(multiplier) || multiplier <= 0.0 || multiplier > 50.0) return 0;
     // Wiki maximum generally assumes a fresh target at 10k HP. The ratio
