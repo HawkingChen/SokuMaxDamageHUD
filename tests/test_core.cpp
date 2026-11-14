@@ -12,6 +12,8 @@
 #include "SuikaGiant.hpp"
 #include "PanelLayout.hpp"
 #include "HitAttribution.hpp"
+#include "SkillSelection.hpp"
+#include "OpeningCounter.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -76,6 +78,36 @@ static void testProjectileRecords() {
     RecordTracker unknown;
     unknown.observeDamage(500,-1,1,0);
     assert(unknown.best().damage==500&&!unknown.best().attributed);
+    // A 4-cost Utsuho sun keeps generating child bullets after the fighter
+    // becomes idle and even just after an emitter despawns. A child with an
+    // explicit parent must inherit the ORIGINAL SC606 cast, not a new action.
+    HitAttribution sun;
+    ActorContact sunCast;sunCast.action=606;sunCast.animationFrame=10;
+    ProjectileContact sunRoot{101,0,1,0,1,0,true,true};
+    const auto castSun=sun.observe(sunCast,sunCast,{}, {sunRoot});
+    assert(castSun.valid()&&castSun.action==606);
+    sun.observe(sunCast,idle,{sunRoot},{sunRoot});
+    sun.observe(idle,idle,{sunRoot},{}); // root despawns
+    ProjectileContact sunChild{102,101,1,0,1,0,true,true};
+    const auto childSpawn=sun.observe(idle,idle,{}, {sunChild});
+    assert(childSpawn==castSun); // parent tombstone, no actor action
+    sunChild.collision=1;sunChild.limit=0;
+    const auto childContact=sun.observe(idle,idle,{sunChild},{sunChild});
+    assert(childContact==castSun);
+    RecordTracker sustained;
+    sustained.observeDamage(600,castSun.action,10,castSun.instance);
+    sustained.observeDamage(500,childContact.action,90,childContact.instance);
+    sustained.observeDamage(700,childContact.action,160,childContact.instance);
+    sustained.observeDamage(900,childContact.action,230,childContact.instance);
+    assert(sustained.best().damage==2700); // post-untech, same cast
+    // Meiling Rainbow Taichi has the same cast-lifetime principle.
+    RecordTracker rainbow;
+    rainbow.observeDamage(400,608,10,5);
+    rainbow.observeDamage(600,608,90,5);
+    rainbow.observeDamage(700,608,170,5);
+    assert(rainbow.best().damage==1700&&rainbow.best().actionId==608);
+    rainbow.observeDamage(900,608,190,6); // second cast: not merged
+    assert(rainbow.best().damage==1700);
 }
 
 static void testHudRoundingModes() {
@@ -182,6 +214,34 @@ int main() {
 
     // Regression: networking roles are the OPPOSITE of the old implementation.
     // SokuMods DiscordIntegration uses VSCLIENT (4) as local left and
+    // Skills can be learned but replaced on the same command slot; the
+    // legacy skillMap.notUsed bit and effective level both matter.
+    static_assert(skillIndex(17,105)==5);
+    static_assert(skillIndex(4,114)==14);
+    static_assert(skillIndex(0,112)==-1);
+    assert(activeSkillLevel(17,105,false,2,4)==4); // effective lv (疎雨)
+    assert(activeSkillLevel(17,105,true,2,2)==-1); // replaced
+    assert(activeSkillLevel(17,105,false,-1,2)==-1);
+    assert(skillActionForNotation(17,101,"623B")==520);
+    assert(skillActionForNotation(17,101,"623C")==521);
+    assert(skillActionForNotation(17,101,"j.623B")==522);
+    assert(skillActionForNotation(4,109,"421B")==585);
+    assert(skillActionForNotation(17,101,"623A")==-1);
+    // With CH eligibility explicitly sourced, Yellow Sand changes only
+    // the first hit, not the rest of a multi-hit move (or unknown shots).
+    OpeningCounterCatalog open;
+    std::istringstream chData(
+        "17|105|623B|-1|1430|https://example.org/meiling\\n"
+        "4|109|421B|-1|1320|https://example.org/emerald\\n");
+    assert(open.read(chData)&&open.size()==2);
+    assert(open.firstHit(17,105,"623B",4)==1430);
+    assert(open.firstHit(4,109,"421B",0)==1320);
+    assert(open.firstHit(4,109,"421C",0)==0);
+    assert(addOpeningCounterHit(1430,1430,1.,true,true)==1906);
+    assert(addOpeningCounterHit(2000,300,1.,true,true)==2100);
+    assert(addOpeningCounterHit(2000,300,1.,false,true)==2000);
+    assert(addOpeningCounterHit(2000,300,1.,true,false)==2000);
+    assert(addOpeningCounterHit(2000,0,1.,true,true)==2000);
     // VSSERVER (5) as local right. A wrong side leaks opponent's hand/skills.
     static_assert(localPlayerSide(4, 1) == 0); // client -> own P1/left
     static_assert(localPlayerSide(5, 1) == 1); // server -> own P2/right
