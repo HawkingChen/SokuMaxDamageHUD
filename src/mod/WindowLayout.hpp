@@ -50,6 +50,7 @@ class InitialFit {
  bool used_=false;layout::PendingResize pending_{};
 public:
  bool used()const{return used_;}
+ void modeChanged(){used_=true;pending_={};}
  // Explicit bottom fitting or fullscreen side restoration grants one request.
  void allowLayoutSelection(){if(!pending_.pending){used_=false;pending_={};}}
  bool pending()const{return pending_.pending;}

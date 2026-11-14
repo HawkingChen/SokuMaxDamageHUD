@@ -49,9 +49,9 @@ inline Plan plan(const Input &i) {
  // BELOW THE FIXED ANCHOR rather than the whole desktop's height.
  if(i.autoFit&&!side) {
   const int overflow=out.game.y+out.game.h+out.panel.h-i.area.y-i.area.h;
-  if(overflow>bottomTolerance(out.panel.h)) {
-   const int availableH=i.area.y+i.area.h-i.original.y-8;
-   const int availableW=i.area.x+i.area.w-i.original.x;
+  if(i.fullscreen||overflow>bottomTolerance(out.panel.h)) {
+   const int availableH=i.fullscreen?i.area.h-16:i.area.y+i.area.h-i.original.y-8;
+   const int availableW=i.fullscreen?i.area.w-16:i.area.x+i.area.w-i.original.x;
    const int maxUnit=std::max(1,std::min((i.original.w-bx)/4,(i.original.h-by)/3));
    const int step=std::max(1,i.unitStep);
    int lo=std::min((80+step-1)/step,maxUnit/step),hi=maxUnit/step,best=0;
@@ -65,6 +65,10 @@ inline Plan plan(const Input &i) {
    if(best){out.game.w=best*4+bx;out.game.h=best*3+by;out.panel=panelSize(out.game);}
   }
  }
+ if(i.autoFit&&i.fullscreen&&!side) {
+  out.game.x=i.area.x+(i.area.w-out.game.w)/2;
+  out.game.y=i.area.y+(i.area.h-out.game.h-out.panel.h)/2;
+ }
  out.panel.x=out.game.x;out.panel.y=out.game.y+out.game.h;
  if(side) {
   const int margin=i.dock==Dock::Left?out.game.x-i.area.x:i.area.x+i.area.w-out.game.x-out.game.w;
@@ -76,6 +80,20 @@ inline Plan plan(const Input &i) {
  // Automatic docking, not overlaying or stretching, handles desktop edges.
  return out;
 }
+// Wait for WindowResizer's style and geometry transition to finish. Own
+// subsequent HUD resizing does not start another fullscreen entry.
+struct FullscreenEntry {
+ bool active=false,ready=false;Rect candidate{},monitor{};unsigned changedAt=0;
+ bool observe(bool full,Rect game,Rect display,unsigned now) {
+  if(!full){*this={};return false;}
+  if(!active||monitor!=display){active=true;ready=false;candidate=game;monitor=display;changedAt=now;}
+  if(ready)return false;
+  if(candidate!=game){candidate=game;changedAt=now;}
+  if(now-changedAt<180)return false;
+  ready=true;return true;
+ }
+ bool settling()const{return active&&!ready;}
+};
 inline bool inside(int x,int y,Rect r){return x>=r.x&&y>=r.y&&x<r.x+r.w&&y<r.y+r.h;}
 inline constexpr std::array<Rect,4> portraitButtons{{{314,10,28,28},{350,10,28,28},{314,46,28,28},{350,46,28,28}}};
 inline int portraitHeight(int width,int height){return std::max(1,height*400/std::max(1,width));}

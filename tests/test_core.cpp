@@ -176,6 +176,22 @@ static void testPanelLayouts() {
     assert((dpiFit.game.w/4)%2==0&&(dpiFit.game.h/3)%2==0);
     assert(dpiFit.panel.y+dpiFit.panel.h<=1032);
     assert(portraitHeight(240,500)==833); // no minimum that squashes text/icons
+    for(Rect display:std::vector<Rect>{{0,0,1920,1080},{-1920,80,1920,1080},{1920,0,2560,1440}}) {
+        Input full;full.area=display;full.original={display.x+240,display.y,1440,1080};full.fullscreen=true;
+        auto centered=plan(full);
+        assert(std::abs((centered.game.x-display.x)*2+centered.game.w-display.w)<=1);
+        assert(std::abs((centered.game.y-display.y)*2+centered.game.h+centered.panel.h-display.h)<=1);
+        assert(centered.game.y>=display.y+8&&centered.panel.y+centered.panel.h<=display.y+display.h-8);
+        full.original=centered.game;assert(plan(full).game==centered.game); // no repeated shrinking
+    }
+    FullscreenEntry entry;Rect display{0,0,1920,1080},native{240,0,1440,1080};
+    assert(!entry.observe(true,{100,100,800,600},display,100));
+    assert(!entry.observe(true,native,display,150));
+    assert(!entry.observe(true,native,display,320));
+    assert(entry.observe(true,native,display,340));
+    assert(!entry.observe(true,{450,9,1020,765},display,600)); // own fit, no entry loop
+    assert(!entry.observe(false,{100,100,800,600},display,700));
+    assert(!entry.observe(true,native,display,800));assert(entry.observe(true,native,display,1000));
     Input wide;wide.original={240,0,1440,1080};wide.area={0,0,1920,1080};
     wide.fullscreen=true;wide.vertical=true;wide.dock=Dock::Right;
     assert(plan(wide).game.w==1440&&plan(wide).game.h==1080);

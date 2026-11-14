@@ -586,6 +586,7 @@ unsigned g_lastPaint=0,g_dragStarted=0;
 whm::layout::Rect g_lastDockGame{},g_lastDockArea{};
 bool g_dockBaseline=false,g_bottomFitRequested=false;
 bool g_haveFullscreenBase=false,g_restoreFullscreen=false;
+whm::layout::FullscreenEntry g_fullscreenEntry;
 whm::layout::Rect g_fullscreenBase{},g_fullscreenMonitor{};
 std::ofstream g_layoutLog;
 void traceLayout(const char *event,whm::layout::Rect r) {
@@ -807,10 +808,21 @@ void refreshPanel() {
         SokuLib::sceneId == SokuLib::SCENE_BATTLESV || SokuLib::sceneId == SokuLib::SCENE_BATTLECL;
     if(IsIconic(game)){ShowWindow(g_panel,SW_HIDE);return;}
     const auto current=whm::window::snapshot(game);
-    if(!current.fullscreen){g_haveFullscreenBase=false;g_restoreFullscreen=false;}
-    else if(!g_haveFullscreenBase||current.monitor!=g_fullscreenMonitor) {
-        g_fullscreenBase=current.outer;g_fullscreenMonitor=current.monitor;g_haveFullscreenBase=true;
+    const bool modeChange=current.fullscreen!=g_fullscreenEntry.active||
+        (current.fullscreen&&current.monitor!=g_fullscreenEntry.monitor);
+    if(modeChange) {
+        g_initialFit.modeChanged();g_haveFullscreenBase=false;g_restoreFullscreen=false;
+        g_bottomFitRequested=false;
     }
+    const bool entered=g_fullscreenEntry.observe(current.fullscreen,current.outer,current.monitor,now);
+    if(entered) {
+        g_fullscreenBase=current.outer;g_fullscreenMonitor=current.monitor;g_haveFullscreenBase=true;
+        traceLayout("fullscreen-enter",g_fullscreenBase);
+        if(g_dock==whm::layout::Dock::Bottom) {
+            g_initialFit.allowLayoutSelection();g_bottomFitRequested=true;
+        }
+    }
+    if(g_fullscreenEntry.settling()) {ShowWindow(g_panel,SW_HIDE);return;}
     const bool show=battleScene&&g_panelWanted.load()&&!g_hidden.load();
     if(!show||!panelOwnsForeground(game)) {if(g_dragging)endDrag(false);ShowWindow(g_panel,SW_HIDE);return;}
     if(g_dragging)return;
@@ -870,7 +882,7 @@ void refreshPanel() {
 DWORD WINAPI panelThread(void *) {
     const bool physical=whm::window::physicalThreadCoordinates();
     if(!g_layoutLog.is_open())g_layoutLog.open(moduleFolder()/L"WindowLayout.log",std::ios::app);
-    if(g_layoutLog)g_layoutLog<<"SokuMaxDamageHUD 0.5.4 pid="<<GetCurrentProcessId()
+    if(g_layoutLog)g_layoutLog<<"SokuMaxDamageHUD 0.5.5 pid="<<GetCurrentProcessId()
         <<" physical-thread="<<physical<<std::endl;
     // Filesystem work runs outside DllMain and never calls into game code.
     // Finish before the first paint, whose bitmap cache remembers missing art.

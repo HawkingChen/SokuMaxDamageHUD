@@ -89,7 +89,10 @@ int main() {
  window::InitialFit fullFit;layout::Input fullInput;fullInput.original=fullscreen;
  fullInput.area=monitor;fullInput.fullscreen=true;fullInput.unitStep=dpiStep;
  const auto smaller=layout::plan(fullInput).game;
- assert(smaller.x==fullscreen.x&&smaller.y==fullscreen.y&&smaller.w<fullscreen.w);
+ assert(smaller.w<fullscreen.w);
+ assert(std::abs((smaller.x-monitor.x)*2+smaller.w-monitor.w)<=1);
+ const auto fullPanel=layout::plan(fullInput).panel;
+ assert(std::abs((smaller.y-monitor.y)*2+smaller.h+fullPanel.h-monitor.h)<=1);
  assert(fullFit.apply(h,fullscreen,smaller,GetTickCount()));
  start=GetTickCount();do {Sleep(1);fullFit.poll(window::snapshot(h),GetTickCount());}
  while(fullFit.pending()&&GetTickCount()-start<2000);
