@@ -1,4 +1,5 @@
 #pragma once
+#include "ActionIdentity.hpp"
 #include <cstdint>
 #include <map>
 #include <vector>
@@ -46,12 +47,22 @@ class HitAttribution {
     }
     AttackOrigin actor(const ActorContact &s) {
         const bool attack=s.action>=300&&s.action<690;
-        const bool restarted=(s.sequence==previousActor_.sequence &&
-            s.animationFrame<previousActor_.animationFrame) ||
-            (s.sequence==0 && previousActor_.sequence>0);
+        const int canonical=canonicalAttackAction(s.action);
+        const bool sameRaw=s.action==previousActor_.action;
+        // Moving 609 -> 659 is a spell's scripted follow-up, not a new
+        // cast, even if sequence/frame resets at the cinematic transition.
+        // A *new* 609 cast after 659 must start a new instance.
+        const bool restarted=sameRaw &&
+            ((s.sequence==previousActor_.sequence &&
+              s.animationFrame<previousActor_.animationFrame) ||
+             (s.sequence==0 && previousActor_.sequence>0));
+        const bool reactivatedBase=isSpellActivationAction(s.action) &&
+            isSpellFollowupAction(previousActor_.action) &&
+            canonical==canonicalAttackAction(previousActor_.action);
         if(!attack)actorOrigin_={};
-        else if(s.action!=previousActor_.action||restarted||!actorOrigin_.valid())
-            actorOrigin_={s.action,++serial_};
+        else if(canonical!=canonicalAttackAction(previousActor_.action)||
+                restarted||reactivatedBase||!actorOrigin_.valid())
+            actorOrigin_={canonical,++serial_};
         previousActor_=s;
         return actorOrigin_;
     }
@@ -126,7 +137,17 @@ public:
         if(hits.size()==1)return hits.front();
         // Some projectiles disappear in the same update as their last hit.
         // Use the sole evidenced active cast; never choose between two casts.
-        return possible.size()==1?possible.front():AttackOrigin{};
+        if(possible.size()==1)return possible.front();
+        if(!possible.empty())return {};
+        // Scripted SC follow-up animations (650..669) can deal damage even
+        // without an ordinary contact box transition. When no other owned
+        // attacker has an available collision source, keep the same cast.
+        // This is *only* an ALT_EFFECT stage, never a blanket "last card"
+        // fallback for idle frames or independent projectiles.
+        if(isSpellFollowupAction(after.action) && afterOrigin.valid() &&
+           afterOrigin.action==canonicalAttackAction(after.action))
+            return afterOrigin;
+        return {};
     }
 };
 
