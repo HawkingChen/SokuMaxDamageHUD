@@ -91,8 +91,8 @@ static void testProjectileRecords() {
     ProjectileContact sunChild{102,101,1,0,1,0,true,true};
     const auto childSpawn=sun.observe(idle,idle,{}, {sunChild});
     assert(childSpawn==castSun); // parent tombstone, no actor action
-    sunChild.collision=1;sunChild.limit=0;
-    const auto childContact=sun.observe(idle,idle,{sunChild},{sunChild});
+    auto hitSunChild=sunChild;hitSunChild.collision=1;hitSunChild.limit=0;
+    const auto childContact=sun.observe(idle,idle,{sunChild},{hitSunChild});
     assert(childContact==castSun);
     RecordTracker sustained;
     sustained.observeDamage(600,castSun.action,10,castSun.instance);
