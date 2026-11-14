@@ -841,11 +841,15 @@ void refreshPanel() {
     g_lastDockGame=current.outer;g_lastDockArea=current.area;g_dockBaseline=true;
     input.dock=g_dock;input.vertical=g_vertical;input.sideWidth=g_sideWidth;
     input.fullscreen=current.fullscreen;
+    input.unitStep=whm::window::physicalUnitStep(game,g_panel);
     input.autoFit=!g_initialFit.used()&&(g_autoFit||g_bottomFitRequested)&&!g_collapsed.load();
     auto planned=whm::layout::plan(input);
     if(!g_collapsed&&!g_initialFit.used()) {
         g_bottomFitRequested=false;
         if(g_initialFit.apply(game,current.outer,planned.game,now)) {
+            if(g_layoutLog)g_layoutLog<<"fit-input game="<<current.outer.x<<","<<current.outer.y<<","<<current.outer.w<<","<<current.outer.h
+                <<" work="<<input.area.x<<","<<input.area.y<<","<<input.area.w<<","<<input.area.h
+                <<" dpi="<<whm::window::windowDpi(game)<<"/"<<whm::window::windowDpi(g_panel)<<std::endl;
             traceLayout("initial-fit",planned.game);ShowWindow(g_panel,SW_HIDE);return;
         }
     }
@@ -864,6 +868,10 @@ void refreshPanel() {
 }
 
 DWORD WINAPI panelThread(void *) {
+    const bool physical=whm::window::physicalThreadCoordinates();
+    if(!g_layoutLog.is_open())g_layoutLog.open(moduleFolder()/L"WindowLayout.log",std::ios::app);
+    if(g_layoutLog)g_layoutLog<<"SokuMaxDamageHUD 0.5.4 pid="<<GetCurrentProcessId()
+        <<" physical-thread="<<physical<<std::endl;
     // Filesystem work runs outside DllMain and never calls into game code.
     // Finish before the first paint, whose bitmap cache remembers missing art.
     try {

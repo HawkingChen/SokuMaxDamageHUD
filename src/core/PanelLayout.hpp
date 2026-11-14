@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <cmath>
 #include <utility>
 namespace whm::layout {
 struct Rect { int x=0,y=0,w=0,h=0; bool operator==(const Rect&)const=default; };
@@ -16,10 +17,23 @@ inline Rect clampPosition(Rect r,Rect area) {
  r.x=std::clamp(r.x,area.x,area.x+std::max(0,area.w-r.w));
  r.y=std::clamp(r.y,area.y,area.y+std::max(0,area.h-r.h));return r;
 }
+// Some Wine/XWayland sessions publish _NET_WORKAREA in compositor logical
+// units while monitor/window coordinates are physical pixels. Correct only
+// the characteristic uniformly scaled, monitor-wide work area on Wine.
+inline Rect physicalWorkArea(Rect work,Rect monitor,bool wine) {
+ if(!wine||work.w<=0||work.h<=0||monitor.w<=0||monitor.h<=0)return work;
+ const double scale=static_cast<double>(monitor.w)/work.w;
+ if(scale<1.2||scale>4.)return work;
+ Rect corrected{static_cast<int>(std::lround(work.x*scale)),static_cast<int>(std::lround(work.y*scale)),
+     monitor.w,static_cast<int>(std::lround(work.h*scale))};
+ if(corrected.h<monitor.h*3/4||corrected.h>monitor.h)return work;
+ if(corrected.x!=monitor.x||corrected.y<monitor.y||corrected.y+corrected.h>monitor.y+monitor.h)return work;
+ return corrected;
+}
 struct Input {
  Rect original,area; Insets borders; Dock dock=Dock::Bottom;
  bool vertical=false,autoFit=true,fullscreen=false;
- int sideWidth=240;
+ int sideWidth=240,unitStep=1;
 };
 struct Plan { Rect game,panel; };
 inline int bottomTolerance(int panelHeight){return std::clamp(panelHeight/6,24,48);}
@@ -39,11 +53,12 @@ inline Plan plan(const Input &i) {
    const int availableH=i.area.y+i.area.h-i.original.y-8;
    const int availableW=i.area.x+i.area.w-i.original.x;
    const int maxUnit=std::max(1,std::min((i.original.w-bx)/4,(i.original.h-by)/3));
-   int lo=std::min(80,maxUnit),hi=maxUnit,best=0;
+   const int step=std::max(1,i.unitStep);
+   int lo=std::min((80+step-1)/step,maxUnit/step),hi=maxUnit/step,best=0;
    while(lo<=hi) {
-    const int u=lo+(hi-lo)/2;Rect candidate{i.original.x,i.original.y,u*4+bx,u*3+by};
+    const int index=lo+(hi-lo)/2,u=index*step;Rect candidate{i.original.x,i.original.y,u*4+bx,u*3+by};
     const auto panel=panelSize(candidate);
-    if(candidate.w<=availableW&&candidate.h+panel.h<=availableH){best=u;lo=u+1;}else hi=u-1;
+    if(candidate.w<=availableW&&candidate.h+panel.h<=availableH){best=u;lo=index+1;}else hi=index-1;
    }
    // No room even for a small usable window: never collapse the game to a
    // few pixels. Keep its size; the user can move it or choose a side.

@@ -135,6 +135,12 @@ static void testHudRoundingModes() {
 
 static void testPanelLayouts() {
     using namespace whm::layout;
+    assert((physicalWorkArea({0,0,960,515},{0,0,1920,1080},true)==Rect{0,0,1920,1030}));
+    assert((physicalWorkArea({0,0,960,515},{0,0,1920,1080},false)==Rect{0,0,960,515}));
+    assert((physicalWorkArea({0,0,960,1080},{0,0,1920,1080},true)==Rect{0,0,960,1080}));
+    assert((physicalWorkArea({0,0,1920,1030},{0,0,1920,1080},true)==Rect{0,0,1920,1030}));
+    assert((physicalWorkArea({-960,0,960,515},{-1920,0,1920,1080},true)==Rect{-1920,0,1920,1030}));
+
     for(auto area:std::vector<Rect>{{0,0,1920,1040},{0,0,2560,1400},{0,0,1280,800},{0,0,1366,728},{0,0,1024,728},{1920,-80,1920,1080}}) {
         for(auto border:std::vector<Insets>{{8,31,8,8},{0,0,0,0}}) {
             Input input;input.area=area;input.borders=border;
@@ -166,6 +172,9 @@ static void testPanelLayouts() {
     auto tight=fits;tight.original={351,125,1280,960};
     auto reduced=plan(tight);assert(reduced.game.x==351&&reduced.game.y==125);
     assert(reduced.panel.y+reduced.panel.h<=1032&&reduced.panel.y+reduced.panel.h>=1024);
+    tight.unitStep=2;auto dpiFit=plan(tight);
+    assert((dpiFit.game.w/4)%2==0&&(dpiFit.game.h/3)%2==0);
+    assert(dpiFit.panel.y+dpiFit.panel.h<=1032);
     assert(portraitHeight(240,500)==833); // no minimum that squashes text/icons
     Input wide;wide.original={240,0,1440,1080};wide.area={0,0,1920,1080};
     wide.fullscreen=true;wide.vertical=true;wide.dock=Dock::Right;

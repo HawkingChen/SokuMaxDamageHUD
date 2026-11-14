@@ -24,15 +24,20 @@ DWORD WINAPI ownerThread(void*) {
  MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return 0;
 }
 int main() {
- using namespace whm;HANDLE thread=CreateThread(nullptr,0,ownerThread,nullptr,0,nullptr);assert(thread);
+ using namespace whm;window::physicalThreadCoordinates();HANDLE thread=CreateThread(nullptr,0,ownerThread,nullptr,0,nullptr);assert(thread);
  unsigned start=GetTickCount();while(!gameWindow&&GetTickCount()-start<2000)Sleep(1);assert(gameWindow);
  HWND h=gameWindow.load();Sleep(40);const auto original=window::snapshot(h);
  assert(original.outer.w>640&&original.outer.h>480);
+ HWND probe=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,L"WHMWindowGeometryTest",L"Physical DPI probe",WS_POPUP,
+     0,0,16,16,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);assert(probe);
+ const int dpiStep=window::physicalUnitStep(h,probe);
+ std::cout<<"DPI game/panel "<<window::windowDpi(h)<<"/"<<window::windowDpi(probe)
+     <<" work "<<original.area.w<<"x"<<original.area.h<<"\n";
  inspectSizes=true;
  for(int cycle=0;cycle<16;++cycle) {
   window::InitialFit geometry;auto s=window::snapshot(h);
   layout::Input input;input.original=s.outer;input.borders=s.borders;
-  input.area={0,0,800,520};input.dock=layout::Dock::Bottom;input.vertical=false;
+  input.unitStep=dpiStep;input.area={0,0,800,520};input.dock=layout::Dock::Bottom;input.vertical=false;
   const auto planned=layout::plan(input);assert(planned.game.w<s.outer.w||planned.game.h<s.outer.h);
   assert(geometry.apply(h,s.outer,planned.game,GetTickCount()));
   start=GetTickCount();
@@ -82,7 +87,7 @@ int main() {
  assert(layout::closeRect(window::snapshot(h).outer,fullscreen));
  inspectSizes=true;
  window::InitialFit fullFit;layout::Input fullInput;fullInput.original=fullscreen;
- fullInput.area=monitor;fullInput.fullscreen=true;
+ fullInput.area=monitor;fullInput.fullscreen=true;fullInput.unitStep=dpiStep;
  const auto smaller=layout::plan(fullInput).game;
  assert(smaller.x==fullscreen.x&&smaller.y==fullscreen.y&&smaller.w<fullscreen.w);
  assert(fullFit.apply(h,fullscreen,smaller,GetTickCount()));
