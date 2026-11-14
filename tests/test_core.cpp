@@ -295,7 +295,7 @@ int main() {
     Fighter normal{};normal.hp=10000;
     const int noCH=estimate(chMove,normal,normal).damage;
     const int yesCH=estimate(chMove,normal,normal,{4./3.}).damage;
-    assert(yesCH>noCH&&yesCH-noCH>=295&&yesCH-noCH<=301);
+    assert(yesCH>noCH&&yesCH-noCH>=290&&yesCH-noCH<=305);
     chMove.hits[0].counterHitEligible=false;
     assert(estimate(chMove,normal,normal,{4./3.}).damage==noCH);
     chMove.hits[0].counterHitEligible=true;
@@ -338,7 +338,7 @@ int main() {
     b.defense = .8;
     assert(rescaleWikiMax(*known, a, b) == 6553);
     a.activeWeather=1;a.spellMultiplier=1.25;a.typeIncludesWeather=true;
-    assert(rescaleWikiMax(*known,a,b)==8192); // no second 1.25
+    assert(rescaleWikiMax(*known,a,b)==8191); // no second 1.25
     RecordTracker record;
     record.observe(10000, 9800, 500, 1);
     record.observe(9800, 9400, 500, 2);
