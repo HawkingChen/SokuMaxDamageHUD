@@ -135,33 +135,38 @@ static void testHudRoundingModes() {
 
 static void testPanelLayouts() {
     using namespace whm::layout;
-    for(auto area:std::vector<Rect>{{0,0,1920,1040},{0,0,2560,1400},
-        {0,0,1280,800},{0,0,1366,728},{0,0,1024,728},{1920,-80,1920,1080}}) {
+    for(auto area:std::vector<Rect>{{0,0,1920,1040},{0,0,2560,1400},{0,0,1280,800},{0,0,1366,728},{0,0,1024,728},{1920,-80,1920,1080}}) {
         for(auto border:std::vector<Insets>{{8,31,8,8},{0,0,0,0}}) {
             Input input;input.area=area;input.borders=border;
             input.original={area.x+40,area.y+20,1280+border.left+border.right,960+border.top+border.bottom};
-            for(auto dock:{Dock::Bottom,Dock::Left,Dock::Right}) {
-                input.dock=dock;input.vertical=dock!=Dock::Bottom;
-                const auto result=plan(input);
-                const int cw=result.game.w-border.left-border.right,ch=result.game.h-border.top-border.bottom;
-                assert(cw*3==ch*4); // CONTENT ratio, never the outer frame
-                assert(result.game.x>=area.x&&result.game.y>=area.y);
-                assert(result.game.x+result.game.w<=area.x+area.w);
-                assert(result.game.y+result.game.h<=area.y+area.h);
-                if(dock!=Dock::Bottom)assert(result.panel.h==result.game.h&&result.panel.y==result.game.y);
-                assert(result.panel.x>=area.x&&result.panel.y>=area.y);
-                assert(result.panel.x+result.panel.w<=area.x+area.w);
-                assert(result.panel.y+result.panel.h<=area.y+area.h);
-                for(int n=0;n<100;++n)assert(plan(input).game==result.game);
-            }
-            input.autoFit=false;assert(plan(input).game==input.original);
+            auto result=plan(input);
+            assert(result.game.x==input.original.x&&result.game.y==input.original.y);
+            assert((result.game.w-border.left-border.right)*3==(result.game.h-border.top-border.bottom)*4);
+            assert(result.panel.y==result.game.y+result.game.h);
+            if(result.game.w!=input.original.w)assert(result.panel.y+result.panel.h<=area.y+area.h-8);
+            // Largest fitting integral 4:3 scale: no huge unused bottom space.
+            if(result.game.w!=input.original.w)assert(area.y+area.h-result.panel.y-result.panel.h<16);
+            for(int n=0;n<100;++n)assert(plan(input).game==result.game);
+            input.autoFit=false;
             for(auto dock:{Dock::Bottom,Dock::Left,Dock::Right}) {
                 input.dock=dock;input.vertical=dock!=Dock::Bottom;
                 auto following=plan(input);assert(following.game==input.original);
-                if(dock!=Dock::Bottom)assert(following.panel.h==following.game.h&&following.panel.y==following.game.y);
+                if(dock!=Dock::Bottom) {
+                    assert(following.panel.h==following.game.h&&following.panel.y==following.game.y);
+                    if(dock==Dock::Right)assert(following.panel.x==following.game.x+following.game.w);
+                    else assert(following.panel.x+following.panel.w==following.game.x);
+                }
             }
         }
     }
+    Input fits;fits.area={0,0,1920,1040};fits.original={351,125,640,480};
+    assert(plan(fits).game==fits.original);
+    auto slight=fits;slight.original.y=1040-480-186+24;
+    assert(plan(slight).game==slight.original); // small overflow is tolerated
+    auto tight=fits;tight.original={351,125,1280,960};
+    auto reduced=plan(tight);assert(reduced.game.x==351&&reduced.game.y==125);
+    assert(reduced.panel.y+reduced.panel.h<=1032&&reduced.panel.y+reduced.panel.h>=1024);
+    assert(portraitHeight(240,500)==833); // no minimum that squashes text/icons
     Input wide;wide.original={240,0,1440,1080};wide.area={0,0,1920,1080};
     wide.fullscreen=true;wide.vertical=true;wide.dock=Dock::Right;
     assert(plan(wide).game.w==1440&&plan(wide).game.h==1080);
@@ -171,7 +176,7 @@ static void testPanelLayouts() {
     flush.dock=Dock::Right;flush.vertical=true;
     assert(plan(flush).panel.x==1260&&plan(flush).panel.y==60&&plan(flush).panel.h==720);
     flush.dock=Dock::Left;assert(plan(flush).panel.x+plan(flush).panel.w==300);
-    flush.original={0,0,1920,1080};assert(plan(flush).game==flush.original&&plan(flush).panel.x==0); // no margin: overlay, no resize
+    flush.original={0,0,1920,1080};assert(plan(flush).game==flush.original&&plan(flush).panel.x==-plan(flush).panel.w); // never overlay the game
     const Rect game{300,100,960,720};
     assert(nearestDock(game,200,300)==Dock::Left);
     assert(nearestDock(game,1400,300)==Dock::Right);
@@ -185,6 +190,8 @@ static void testPanelLayouts() {
         assert(mapped.first==924+(n%2)*34&&mapped.second==218+(n/2)*34);}
     assert(canonicalPoint(true,10,5).first==-1); // draggable header, not a button
     const Rect desktop{0,0,1920,1080};
+    assert(automaticDock({200,342,960,480},desktop,Dock::Bottom,240)==Dock::Bottom); // ~20px overflow
+
     assert(automaticDock({200,450,960,600},desktop,Dock::Bottom,240)==Dock::Right);
     assert(automaticDock({700,450,960,600},desktop,Dock::Bottom,240)==Dock::Left);
     assert(automaticDock({10,20,960,720},desktop,Dock::Left,240)==Dock::Right);

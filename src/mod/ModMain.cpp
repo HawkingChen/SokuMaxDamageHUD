@@ -585,14 +585,19 @@ POINT g_dragMouse{},g_dragWindow{};
 unsigned g_lastPaint=0,g_dragStarted=0;
 whm::layout::Rect g_lastDockGame{},g_lastDockArea{};
 bool g_dockBaseline=false,g_bottomFitRequested=false;
+bool g_haveFullscreenBase=false,g_restoreFullscreen=false;
+whm::layout::Rect g_fullscreenBase{},g_fullscreenMonitor{};
 std::ofstream g_layoutLog;
 void traceLayout(const char *event,whm::layout::Rect r) {
     if(!g_layoutLog.is_open())g_layoutLog.open(moduleFolder()/L"WindowLayout.log",std::ios::app);
     if(g_layoutLog)g_layoutLog<<GetTickCount()<<" "<<event<<" "<<r.x<<","<<r.y<<" "<<r.w<<"x"<<r.h<<std::endl;
 }
 void chooseDock(whm::layout::Dock dock,bool manual=true) {
-    if(manual&&dock==whm::layout::Dock::Bottom){g_initialFit.allowBottomSelection();g_bottomFitRequested=true;}
+    if(manual&&dock==whm::layout::Dock::Bottom){g_initialFit.allowLayoutSelection();g_bottomFitRequested=true;}
     const auto current=whm::window::snapshot(SokuLib::window);
+    if(manual&&dock!=whm::layout::Dock::Bottom&&current.fullscreen&&g_haveFullscreenBase) {
+        g_initialFit.allowLayoutSelection();g_restoreFullscreen=true;g_bottomFitRequested=false;
+    }
     g_lastDockGame=current.outer;g_lastDockArea=current.area;g_dockBaseline=true;
     g_dock=dock;g_vertical.store(dock!=whm::layout::Dock::Bottom);
     g_lastPaint=0;saveHudPreferences();
@@ -802,6 +807,10 @@ void refreshPanel() {
         SokuLib::sceneId == SokuLib::SCENE_BATTLESV || SokuLib::sceneId == SokuLib::SCENE_BATTLECL;
     if(IsIconic(game)){ShowWindow(g_panel,SW_HIDE);return;}
     const auto current=whm::window::snapshot(game);
+    if(!current.fullscreen){g_haveFullscreenBase=false;g_restoreFullscreen=false;}
+    else if(!g_haveFullscreenBase||current.monitor!=g_fullscreenMonitor) {
+        g_fullscreenBase=current.outer;g_fullscreenMonitor=current.monitor;g_haveFullscreenBase=true;
+    }
     const bool show=battleScene&&g_panelWanted.load()&&!g_hidden.load();
     if(!show||!panelOwnsForeground(game)) {if(g_dragging)endDrag(false);ShowWindow(g_panel,SW_HIDE);return;}
     if(g_dragging)return;
@@ -815,6 +824,12 @@ void refreshPanel() {
         g_lastDockGame=current.outer;g_lastDockArea=current.area;g_dockBaseline=true;
     }
     if(g_initialFit.pending()){ShowWindow(g_panel,SW_HIDE);return;}
+    if(g_restoreFullscreen) {
+        g_restoreFullscreen=false;
+        if(g_initialFit.apply(game,current.outer,g_fullscreenBase,now)) {
+            traceLayout("fullscreen-restore",g_fullscreenBase);ShowWindow(g_panel,SW_HIDE);return;
+        }
+    }
     whm::layout::Input input;input.original=current.outer;input.borders=current.borders;
     input.area=current.fullscreen?current.monitor:current.area;
     if(g_initialFit.used()&&!current.fullscreen&&!g_collapsed.load()) {
@@ -1050,9 +1065,8 @@ void loadSettings() {
     g_language.store(chosen == L"JP" ? 1 : chosen == L"EN" ? 2 : 0);
     g_collapsed.store(GetPrivateProfileIntW(L"HUD", L"Collapsed", 0, ini.c_str()) != 0);
     g_hidden.store(false);
-    g_vertical.store(GetPrivateProfileIntW(L"HUD",L"Vertical",0,ini.c_str())!=0);
-    g_dock=static_cast<whm::layout::Dock>(std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"Dock",0,ini.c_str()),0,2));
-    g_vertical.store(g_dock!=whm::layout::Dock::Bottom);
+    // Startup is deliberately bottom/expanded; docking is per-session state.
+    g_dock=whm::layout::Dock::Bottom;g_vertical.store(false);g_collapsed.store(false);
     g_autoFit=GetPrivateProfileIntW(L"HUD",L"AutoFit",1,ini.c_str())!=0;
     g_sideWidth=std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"SideWidth",240,ini.c_str()),120,600);
     // 1602 sourced rows: character, card, notation, zh-CN, en, ja, source.

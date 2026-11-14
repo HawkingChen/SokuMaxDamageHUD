@@ -49,11 +49,13 @@ To update, back up the old folder, close the game, and replace the files with th
 - **Current hand**: estimated spell damage in hand order.
 - The **CN / JP / EN** button cycles languages. Two direction buttons switch to the other dock positions; the bold up button collapses the panel. A translucent **＋** inside the game’s bottom-right corner expands it. Preferences are saved automatically.
 
-**Window layouts (0.5.2 onward):** use the panel buttons or drag to select bottom, left or right; there are no keyboard shortcuts. Portrait matches the game height; landscape sits flush below it. Initial placement may fit the game at 4:3. Explicitly selecting bottom also permits a new adjustment, including WindowResizer borderless fullscreen. Other changes, collapsing and leaving battle do not resize the game.
+**Window layouts (0.5.3 onward):** each launch starts expanded below the game. Use buttons or drag to choose bottom/left/right; no keyboard shortcuts. Portrait matches the game height without distorting artwork or text, with damage modifiers first and emphasized percentages/type multipliers.
 
-In windowed mode, moving the game until the bottom HUD no longer fits switches to the roomier side. A cramped sidebar switches only if the other side offers materially more room; equally cramped sides stay stable. The translucent static drag preview follows the pointer freely and snaps only near an edge; releasing docks below/left/right. Damage recording continues.
+Initial placement and explicit bottom selection shrink the game only for substantial bottom overflow. Its top-left stays fixed; the client remains 4:3. The largest fitting size leaves about 8px clearance. Small overflow (about 24–48px) is tolerated to avoid sensitive side switching. Sidebars always attach outside the game and never move inside it.
 
-Supports ordinary windows and **WindowResizer borderless fullscreen**, not exclusive fullscreen. `[HUD] AutoFit=0` in `SokuMaxDamageHUD.ini` disables initial fitting; explicitly selecting bottom still permits adjustment. `SideWidth` sets portrait width. The HUD hides outside supported battles or when another application has focus.
+In windowed mode, a bottom panel that substantially overflows switches to the roomier side. Sidebars switch only to a materially roomier side, preventing loops. A translucent static drag preview follows the pointer and snaps only near an edge; releasing selects the nearest dock. Damage recording continues.
+
+Supports ordinary windows and **WindowResizer borderless fullscreen**, not exclusive fullscreen. Selecting a side from bottom in fullscreen restores the window size saved on entering fullscreen. `[HUD] AutoFit=0` in `SokuMaxDamageHUD.ini` disables initial fitting; explicit bottom selection still permits fitting. `SideWidth` sets portrait width. The HUD hides outside battles or when the game loses focus.
 
 ## Limitations
 

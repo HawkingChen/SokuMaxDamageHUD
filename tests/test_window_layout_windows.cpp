@@ -32,7 +32,7 @@ int main() {
  for(int cycle=0;cycle<16;++cycle) {
   window::InitialFit geometry;auto s=window::snapshot(h);
   layout::Input input;input.original=s.outer;input.borders=s.borders;
-  input.area={0,0,800,520};input.dock=cycle%2?layout::Dock::Right:layout::Dock::Bottom;input.vertical=cycle%2;
+  input.area={0,0,800,520};input.dock=layout::Dock::Bottom;input.vertical=false;
   const auto planned=layout::plan(input);assert(planned.game.w<s.outer.w||planned.game.h<s.outer.h);
   assert(geometry.apply(h,s.outer,planned.game,GetTickCount()));
   start=GetTickCount();
@@ -57,7 +57,7 @@ int main() {
   geometry.poll(window::snapshot(h),GetTickCount());
   assert(!geometry.apply(h,original.outer,planned.game,GetTickCount()));
   // Only an explicit bottom action rearms the resize permission.
-  geometry.allowBottomSelection();
+  geometry.allowLayoutSelection();
   assert(geometry.apply(h,original.outer,planned.game,GetTickCount()));
   start=GetTickCount();
   do {Sleep(1);geometry.poll(window::snapshot(h),GetTickCount());}
@@ -69,7 +69,34 @@ int main() {
   while(!layout::closeRect(window::snapshot(h).outer,original.outer)&&GetTickCount()-start<2000)Sleep(1);
   assert(layout::closeRect(window::snapshot(h).outer,original.outer));
  }
+ // Model WindowResizer's frameless window without changing a D3D mode.
+ inspectSizes=false;
+ const auto monitor=window::snapshot(h).monitor;
+ const int u=std::min(monitor.w/4,monitor.h/3);
+ const layout::Rect fullscreen{monitor.x+(monitor.w-u*4)/2,monitor.y,u*4,u*3};
+ SetWindowLongW(h,GWL_STYLE,WS_POPUP|WS_VISIBLE);
+ assert(SetWindowPos(h,nullptr,fullscreen.x,fullscreen.y,fullscreen.w,fullscreen.h,
+     SWP_NOACTIVATE|SWP_NOZORDER|SWP_ASYNCWINDOWPOS|SWP_FRAMECHANGED));
+ start=GetTickCount();
+ while(!layout::closeRect(window::snapshot(h).outer,fullscreen)&&GetTickCount()-start<2000)Sleep(1);
+ assert(layout::closeRect(window::snapshot(h).outer,fullscreen));
+ inspectSizes=true;
+ window::InitialFit fullFit;layout::Input fullInput;fullInput.original=fullscreen;
+ fullInput.area=monitor;fullInput.fullscreen=true;
+ const auto smaller=layout::plan(fullInput).game;
+ assert(smaller.x==fullscreen.x&&smaller.y==fullscreen.y&&smaller.w<fullscreen.w);
+ assert(fullFit.apply(h,fullscreen,smaller,GetTickCount()));
+ start=GetTickCount();do {Sleep(1);fullFit.poll(window::snapshot(h),GetTickCount());}
+ while(fullFit.pending()&&GetTickCount()-start<2000);
+ assert(!fullFit.pending()&&!fullFit.blocked());
+ fullFit.allowLayoutSelection();
+ assert(fullFit.apply(h,window::snapshot(h).outer,fullscreen,GetTickCount()));
+ start=GetTickCount();do {Sleep(1);fullFit.poll(window::snapshot(h),GetTickCount());}
+ while(fullFit.pending()&&GetTickCount()-start<2000);
+ assert(!fullFit.pending()&&!fullFit.blocked());
+ assert(layout::closeRect(window::snapshot(h).outer,fullscreen));
+ assert(!(GetWindowLongW(h,GWL_STYLE)&(WS_CAPTION|WS_THICKFRAME)));
  assert(observedSizes>=16&&badRatios==0);
  inspectSizes=false;PostMessageW(h,WM_CLOSE,0,0);assert(WaitForSingleObject(thread,2000)==WAIT_OBJECT_0);CloseHandle(thread);
- std::cout<<"Cross-thread initial fit, 4:3 clients, follow-only docks and one-shot resize gate passed\n";
+ std::cout<<"Anchored initial/bottom fit, stable docks, 4:3 clients and frameless size restoration passed\n";
 }

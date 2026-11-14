@@ -24,14 +24,13 @@ inline Snapshot snapshot(HWND game) {
  s.supported=!(frameless&&covers&&!resizer);
  return s;
 }
-// One placement request per process, including rejected/no-op requests.
-// No restoration path is exposed: changing the HUD must never resize the game.
+// A bounded geometry request, rearmed only by explicit permitted layouts.
 class InitialFit {
  bool used_=false;layout::PendingResize pending_{};
 public:
  bool used()const{return used_;}
- // Explicit bottom selection grants one additional bounded request.
- void allowBottomSelection(){if(!pending_.pending){used_=false;pending_={};}}
+ // Explicit bottom fitting or fullscreen side restoration grants one request.
+ void allowLayoutSelection(){if(!pending_.pending){used_=false;pending_={};}}
  bool pending()const{return pending_.pending;}
  bool blocked()const{return pending_.blocked;}
  void poll(Snapshot s,unsigned now){pending_.ready(s.outer,now);}

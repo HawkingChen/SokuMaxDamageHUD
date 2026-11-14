@@ -422,43 +422,55 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
             write(localized(focused?whm::HudTextKey::Theoretical:whm::HudTextKey::MatchBest),
                 tx,y+cardH-19,tw,15,10,faded,DT_CENTER);
         };
-        portraitCard(84,v.strongest,v.suikaGiantActive?whm::HudTextKey::StrongestNormal:whm::HudTextKey::Strongest,whm::HudTextKey::NoSkill,true);
-        portraitCard(92+cardH,v.record,whm::HudTextKey::Record,whm::HudTextKey::NoRecord,false);
-        const int ey=100+cardH*2;
+        portraitCard(92+effectsH,v.strongest,v.suikaGiantActive?whm::HudTextKey::StrongestNormal:whm::HudTextKey::Strongest,whm::HudTextKey::NoSkill,true);
+        portraitCard(100+effectsH+cardH,v.record,whm::HudTextKey::Record,whm::HudTextKey::NoRecord,false);
+        const int ey=84;
         outlinedPanel(8,ey,384,effectsH,false);
         write(localized(whm::HudTextKey::PanelTitle),20,ey+5,360,26,19,cream);
         const auto heat=whm::paletteForPercent(v.commonPercent);
-        number(panelPercent(v.commonPercent),22,ey+31,230,64,57,DT_LEFT,&heat);
+        const int emphasis=std::clamp((vh-800)/18,0,36);
+        const int percentSize=57+emphasis;
+        const int percentH=64+emphasis;
+        const int percentW=std::min(286,230+emphasis*2);
+        number(panelPercent(v.commonPercent),22,ey+31,percentW,percentH,percentSize,DT_LEFT,&heat);
         const auto guts=v.gutsText.empty()?whm::gutsLabel(v.hpFactor):v.gutsText;
-        write(panelWide(guts),268,ey+57,106,25,18,quietGrey,DT_LEFT,L"Georgia");
-        int ty=ey+96;
+        // Keep guts close to the actual percentage instead of a fixed far column.
+        const auto percentText=panelPercent(v.commonPercent);
+        HFONT measureFont=CreateFontW(-percentSize,0,0,0,FW_BOLD,TRUE,FALSE,FALSE,DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Georgia");
+        auto oldMeasure=SelectObject(dc,measureFont);SIZE extent{};
+        GetTextExtentPoint32W(dc,percentText.c_str(),static_cast<int>(percentText.size()),&extent);
+        SelectObject(dc,oldMeasure);DeleteObject(measureFont);
+        const int gutsX=std::min(310,22+std::min(percentW,static_cast<int>(extent.cx))+12);
+        write(panelWide(guts),gutsX,ey+57+emphasis/2,386-gutsX,25,16,quietGrey,DT_LEFT,L"Georgia");
+        int ty=ey+96+emphasis;
         if(v.firstHitActive) {
             write(localized(whm::HudTextKey::FirstHit)+L" ×"+panelWide(panelFactor(v.firstHitMultiplier,2)),
                 22,ty,354,18,13,gold);ty+=18;
         }
-        write(localized(whm::HudTextKey::SpecialType)+L": ×"+panelWide(panelFactor(v.skillMultiplier,2)),22,ty,180,22,15,cream);
-        write(localized(whm::HudTextKey::SpellType)+L": ×"+panelWide(panelFactor(v.spellMultiplier,2)),210,ty,170,22,15,cream);
+        write(localized(whm::HudTextKey::SpecialType)+L": ×"+panelWide(panelFactor(v.skillMultiplier,2)),22,ty,180,26,18+emphasis/6,bright);
+        write(localized(whm::HudTextKey::SpellType)+L": ×"+panelWide(panelFactor(v.spellMultiplier,2)),210,ty,170,26,18+emphasis/6,bright);
         rule(22,ty+26,376,ty+26,RGB(111,91,143));
         const int top=ty+33,bottom=ey+effectsH-(v.weatherVisible?25:8);
-        const int pitch=rows?(bottom-top)/rows:30;
+        const int pitch=rows?std::min(74,(bottom-top)/rows):30;
         for(size_t n=0;n<v.effects.size();++n) {
             const auto &effect=v.effects[n];const int x=22+(n%2)*190,y=top+static_cast<int>(n/2)*pitch;
             const int ch=std::clamp(pitch-8,10,72),cw=std::max(8,ch*41/65);
             const auto label=panelWide(whm::localizeEffectLabel(effect.label.c_str(),lang));
-            stacked(effect.character,effect.card,x,y+(pitch-ch)/2,effect.copies,cw,ch,4,label.empty()?L"?":label.substr(0,1));
+            stacked(effect.character,effect.card,x,y,effect.copies,cw,ch,4,label.empty()?L"?":label.substr(0,1));
             const auto caption=label+(effect.copies>1?L" ×"+std::to_wstring(effect.copies):L"");
             const auto val=panelWide(whm::localizeEffectValue(effect.value,lang));
-            if(pitch>=34) {
+            if(pitch>=46) {
                 const int tx=x+std::max(48,cw+16);
-                write(caption,tx,y+pitch/2-22,174-(tx-x),22,12,cream);
-                write(val,tx,y+pitch/2,174-(tx-x),24,18,bright);
+                write(caption,tx,y,174-(tx-x),22,12,cream);
+                write(val,tx,y+23,174-(tx-x),24,18,bright);
             } else {
                 write(caption,x+40,y,80,pitch,10,cream);write(val,x+120,y,52,pitch,11,bright);
             }
         }
         if(v.effects.empty())write(localized(whm::HudTextKey::NoEffects),22,top,354,26,15,faded,DT_CENTER);
         if(v.weatherVisible)write(localized(whm::HudTextKey::Weather)+L" "+panelWide(whm::weatherName(v.weather,lang)),22,ey+effectsH-23,354,18,13,lavender);
-        const int hy=ey+effectsH+8;
+        const int hy=108+effectsH+cardH*2;
         outlinedPanel(8,hy,384,handH,false);
         write(localized(whm::HudTextKey::Hand),20,hy+4,160,27,19,cream);
         write(localized(whm::HudTextKey::SpellMax),182,hy+4,196,27,14,lavender,DT_RIGHT);
