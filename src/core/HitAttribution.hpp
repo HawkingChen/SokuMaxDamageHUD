@@ -199,6 +199,9 @@ inline int observedDamage(int beforeHP,int afterHP,ComboReading before,ComboRead
     if(after.hits>0 && after.damage>0 &&
        (after.hits!=before.hits || after.damage!=before.damage)) {
         if(before.hits==0)comboDelta=after.damage;
+        else if(before.freshTarget && after.hits<=before.hits &&
+                after.damage<before.damage)
+            comboDelta=after.damage; // proven new combo after target recovered
         else if(!before.freshTarget &&
                 after.hits>before.hits && after.damage>before.damage)
             comboDelta=after.damage-before.damage;
