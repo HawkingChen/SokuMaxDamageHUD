@@ -40,8 +40,8 @@ inline constexpr HudTextEntry kHudTexts[] = {
     /* MatchBest   */ {"本局最高 · 命中", "この対戦の最大ダメージ", "MATCH BEST · HIT"},
     /* Weather     */ {"天气", "天気", "WEATHER"},
     /* Unknown     */ {"未知", "不明", "UNKNOWN"},
-    /* SpecialType */ {"必杀技", "必殺技", "SPECIAL"},
-    /* SpellType   */ {"符卡", "スペカ", "SPELL"},
+    /* SpecialType */ {"必杀技", "必殺技", "SKILL"},
+    /* SpellType   */ {"符卡", "スペカ", "SC"},
     /* Guts        */ {"根性修正", "根性補正", "GUTS"},
     /* FirstHit    */ {"打击首击", "打撃初段", "MELEE 1ST HIT"},
 };
