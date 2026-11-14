@@ -118,6 +118,63 @@ static void testProjectileRecords() {
     assert(!expired.observe(idle,idle,{}, {sunChild}).valid());
 }
 
+static void testSuikaDelayed5CWithJ6A() {
+    using namespace whm;
+    // SokuLib Action.hpp: ACTION_5C=410, ACTION_j6A=307.
+    HitAttribution source;
+    ActorContact shoot; shoot.action=410;shoot.animationFrame=12;
+    ActorContact idle;
+    ProjectileContact fiveC{901,0,12,0,3,0,true,true};
+    const auto spawn=source.observeDetailed(shoot,shoot,{}, {fiveC});
+    assert(spawn.origin.valid()&&spawn.origin.action==410&&!spawn.mixed);
+    source.observe(shoot,idle,{fiveC},{fiveC});
+    auto hit5C=fiveC;hit5C.collision=1;hit5C.limit=2;
+    const auto landed=source.observeDetailed(idle,idle,{fiveC},{hit5C});
+    assert(landed.origin==spawn.origin&&!landed.mixed);
+    RecordTracker record;
+    record.observeDamage(2280,landed.origin.action,100,landed.origin.instance);
+    assert(record.best().damage==2280&&record.best().actionId==410);
+
+    // A hit from j6A is explicitly detected, but the *old* 5C projectile
+    // still owns an active collision box. Cannot split the opponent's total
+    // damage into the two attacks using HP/combo counters alone.
+    ActorContact jump; jump.action=307;jump.collision=1;
+    jump.limit=2;jump.hitBoxes=true;
+    const auto overlap=source.observeDetailed(idle,jump,{hit5C},{hit5C});
+    assert(overlap.mixed&&!overlap.origin.valid());
+    // Before the fix the combined 2280+777 was wrongly ranked as a 3057 j6A.
+    record.observeDamage(3057,overlap.origin.action,101,overlap.origin.instance,
+                         overlap.mixed);
+    assert(record.best().damage==2280&&record.best().actionId==410);
+    assert(record.unattributedDamage()==3057);
+
+    // With reliable frame-local HP delta, j6A adds only 777 even if the
+    // combo counter changes its hit count/reset behavior.
+    assert(observedDamage(7720,6943,{3,2280,false},{4,3057,false})==777);
+    assert(observedDamage(7720,6943,{3,2280,false},{1,3057,false})==777);
+    assert(observedDamage(10000,10000,{3,2280,false},{1,3057,false})==0);
+
+    // Without old projectiles a genuine j6A-only hit still ranks normally.
+    HitAttribution bodyOnly;
+    auto j=bodyOnly.observeDetailed(idle,jump,{},{});
+    assert(j.origin.valid()&&j.origin.action==307&&!j.mixed);
+    RecordTracker clean;
+    clean.observeDamage(777,j.origin.action,1,j.origin.instance,j.mixed);
+    assert(clean.best().damage==777&&clean.best().actionId==307);
+
+    // Two independent projectiles hitting together have no single owner.
+    HitAttribution bullets;
+    auto shotA=bullets.observe(shoot,shoot,{}, {fiveC});
+    assert(shotA.valid());
+    ProjectileContact second{902,0,13,0,3,0,true,true};
+    ActorContact other;other.action=411;other.animationFrame=4;
+    bullets.observe(other,other,{fiveC},{fiveC,second});
+    auto aHit=fiveC,bHit=second;
+    aHit.collision=1;aHit.limit=2;bHit.collision=1;bHit.limit=2;
+    const auto two=bullets.observeDetailed(idle,idle,{fiveC,second},{aHit,bHit});
+    assert(two.mixed&&!two.origin.valid());
+}
+
 static void testSpellFollowupAttribution() {
     using namespace whm;
     // SokuLib Action.hpp: every SC200..219 has an ALT_EFFECT in 650..669.
@@ -323,6 +380,7 @@ int main() {
     testPanelLayouts();
     testHudRoundingModes();
     testProjectileRecords();
+    testSuikaDelayed5CWithJ6A();
     testSpellFollowupAttribution();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
