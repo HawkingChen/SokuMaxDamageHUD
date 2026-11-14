@@ -15,6 +15,7 @@
 #include "HudPalette.hpp"
 #include "FirstHit.hpp"
 #include "MeilingTiger.hpp"
+#include "SuikaGiant.hpp"
 #include "HitSnapshots.hpp"
 #include "GameAssets.hpp"
 
@@ -353,6 +354,11 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
     // the "根性补正" row are byte-identical strings in the same snapshot.
     view.gutsText=whm::gutsLabel(view.hpFactor);
     collectDamageEffects(view,&ownCounters,&enemyCounters);
+    // The 1.10a CharacterManager timer at +0x892 is Suika MPP duration.
+    // Never infer the transformation from the selected spell card: the HUD
+    // must switch only while the game reports that giant mode is effective.
+    view.suikaGiantActive=whm::suikaMPPActive(view.character,
+        effectField<unsigned short>(&ownCounters,0x892));
     // Capture the original +0x198 Tiger scale before the first-hit percentage
     // display overwrites it with a combo/animation-gated presentation value.
     // The highest theoretical move assumes a fresh first melee hit, so only
@@ -399,19 +405,36 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         // CH must not be applied to projectile skill damage or entire multi-hits.
         return static_cast<int>(m.damage*effective);
     };
-    std::string bestNotation,bestName;
-    for(const auto &m:g_staticMoves){
-        if(m.character!=view.character||m.kind!="skill")continue; // A non-SC featured move must be a special skill.
-        if(m.card<100||m.card>=132||own->skilledSkillLevel[m.card-100]<0)continue;
-        int damage=amount(m);
-        if(damage>view.strongest.damage){
-            bestNotation=whm::normalizeNotation(m.notation);bestName=m.name;
-            view.strongest=makeCard(view.character,m.card,damage,m.notation,
-                                    bestNotation,m.name,true);
-        } else if(damage==view.strongest.damage&&m.card==view.strongest.card&&m.name==bestName){
-            bestNotation=whm::mergeSkillButtons(bestNotation,
-                                                whm::normalizeNotation(m.notation));
-            view.strongest.notation=bestNotation;
+    if (view.suikaGiantActive) {
+        // In MPP, only giant-form basic attacks remain usable. The ordinary
+        // skill lookup would otherwise advertise moves Suika cannot perform.
+        // MPP explicitly receives Drizzle's spell-type bonus on ALL attacks;
+        // spellDmgMultiplier already contains its live weather scale, so
+        // apply it once here and never to ordinary non-MPP normals.
+        const double drizzle = view.weather==1 && !view.weatherSealed
+                               ? view.spellMultiplier : 1.;
+        const double factor = view.attack*view.defense*view.hpFactor*drizzle;
+        const whm::SuikaGiantBest giant=whm::strongestSuikaGiantMove(factor);
+        if (giant.move) {
+            const std::string notation=giant.move->notation;
+            view.strongest=makeCard(view.character,-1,giant.damage,notation,
+                                    notation,notation,true);
+        }
+    } else {
+        std::string bestNotation,bestName;
+        for(const auto &m:g_staticMoves){
+            if(m.character!=view.character||m.kind!="skill")continue;
+            if(m.card<100||m.card>=132||own->skilledSkillLevel[m.card-100]<0)continue;
+            int damage=amount(m);
+            if(damage>view.strongest.damage){
+                bestNotation=whm::normalizeNotation(m.notation);bestName=m.name;
+                view.strongest=makeCard(view.character,m.card,damage,m.notation,
+                                        bestNotation,m.name,true);
+            } else if(damage==view.strongest.damage&&m.card==view.strongest.card&&m.name==bestName){
+                bestNotation=whm::mergeSkillButtons(bestNotation,
+                                                    whm::normalizeNotation(m.notation));
+                view.strongest.notation=bestNotation;
+            }
         }
     }
     for(const auto &card:own->handInfo.hand){
