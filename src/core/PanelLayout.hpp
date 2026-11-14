@@ -104,6 +104,22 @@ inline Dock nearestDock(Rect game,int x,int y) {
  if(bottom<=left&&bottom<=right)return Dock::Bottom;
  return left<right?Dock::Left:Dock::Right;
 }
+inline Dock automaticDock(Rect game,Rect area,Dock current,int width) {
+ const int left=game.x-area.x,right=area.x+area.w-game.x-game.w;
+ if(current==Dock::Bottom) {
+  const int required=(game.w*290+500)/1000;
+  if(area.y+area.h-game.y-game.h>=required-4)return current;
+  return left>right?Dock::Left:Dock::Right;
+ }
+ const int here=current==Dock::Left?left:right,other=current==Dock::Left?right:left;
+ // Switch only to a materially better side. Both sides cramped stays stable.
+ if(here<width-8&&other>=here+32)return current==Dock::Left?Dock::Right:Dock::Left;
+ return current;
+}
+inline bool nearDock(Rect game,int x,int y,Dock dock,int threshold=24) {
+ if(dock==Dock::Bottom)return std::abs(y-game.y-game.h)<=threshold&&x>=game.x-threshold&&x<=game.x+game.w+threshold;
+ return std::abs(x-(dock==Dock::Left?game.x:game.x+game.w))<=threshold&&y>=game.y-threshold&&y<=game.y+game.h+threshold;
+}
 inline Rect foldedButton(Rect game,Insets border) {
  const int size=std::clamp((game.w-border.left-border.right)/24,24,38);
  return {game.x+game.w-border.right-size-8,game.y+game.h-border.bottom-size-8,size,size};

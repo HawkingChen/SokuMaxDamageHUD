@@ -75,8 +75,6 @@ std::atomic<bool> g_hidden{false};
 whm::layout::Dock g_dock=whm::layout::Dock::Bottom; // UI thread only after load
 bool g_autoFit=true;
 int g_sideWidth=240;
-unsigned g_hotkeyModifiers=MOD_CONTROL|MOD_SHIFT;
-int g_toggleKey='H',g_layoutKey='O',g_positionKey='P';
 struct MoveNameEntry { std::array<std::string, 3> names; };
 std::map<std::string, MoveNameEntry> g_moveNames;
 
@@ -491,13 +489,18 @@ bool g_dragging=false;
 HWND g_dragGhost=nullptr;
 HBITMAP g_dragBitmap=nullptr;
 POINT g_dragMouse{},g_dragWindow{};
-unsigned g_lastPaint=0;
+unsigned g_lastPaint=0,g_dragStarted=0;
+whm::layout::Rect g_lastDockGame{},g_lastDockArea{};
+bool g_dockBaseline=false,g_bottomFitRequested=false;
 std::ofstream g_layoutLog;
 void traceLayout(const char *event,whm::layout::Rect r) {
     if(!g_layoutLog.is_open())g_layoutLog.open(moduleFolder()/L"WindowLayout.log",std::ios::app);
     if(g_layoutLog)g_layoutLog<<GetTickCount()<<" "<<event<<" "<<r.x<<","<<r.y<<" "<<r.w<<"x"<<r.h<<std::endl;
 }
-void chooseDock(whm::layout::Dock dock) {
+void chooseDock(whm::layout::Dock dock,bool manual=true) {
+    if(manual&&dock==whm::layout::Dock::Bottom){g_initialFit.allowBottomSelection();g_bottomFitRequested=true;}
+    const auto current=whm::window::snapshot(SokuLib::window);
+    g_lastDockGame=current.outer;g_lastDockArea=current.area;g_dockBaseline=true;
     g_dock=dock;g_vertical.store(dock!=whm::layout::Dock::Bottom);
     g_lastPaint=0;saveHudPreferences();
 }
@@ -505,7 +508,8 @@ LRESULT CALLBACK ghostProc(HWND h,UINT m,WPARAM w,LPARAM l) {
     if(m==WM_PAINT) {
         PAINTSTRUCT ps{};HDC dc=BeginPaint(h,&ps);
         if(g_dragBitmap){HDC source=CreateCompatibleDC(dc);auto old=SelectObject(source,g_dragBitmap);
-            BITMAP bm{};GetObjectW(g_dragBitmap,sizeof(bm),&bm);BitBlt(dc,0,0,bm.bmWidth,bm.bmHeight,source,0,0,SRCCOPY);
+            BITMAP bm{};GetObjectW(g_dragBitmap,sizeof(bm),&bm);RECT r{};GetClientRect(h,&r);
+            SetStretchBltMode(dc,HALFTONE);StretchBlt(dc,0,0,r.right,r.bottom,source,0,0,bm.bmWidth,bm.bmHeight,SRCCOPY);
             SelectObject(source,old);DeleteDC(source);}
         EndPaint(h,&ps);return 0;
     }
@@ -513,9 +517,19 @@ LRESULT CALLBACK ghostProc(HWND h,UINT m,WPARAM w,LPARAM l) {
 }
 void moveDragPreview() {
     if(!g_dragging||!g_dragGhost)return;
+    ClipCursor(nullptr);
     POINT now{};GetCursorPos(&now);
-    SetWindowPos(g_dragGhost,nullptr,g_dragWindow.x+now.x-g_dragMouse.x,
-        g_dragWindow.y+now.y-g_dragMouse.y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    BITMAP image{};GetObjectW(g_dragBitmap,sizeof(image),&image);
+    whm::layout::Rect target{g_dragWindow.x+now.x-g_dragMouse.x,g_dragWindow.y+now.y-g_dragMouse.y,image.bmWidth,image.bmHeight};
+    const auto current=whm::window::snapshot(SokuLib::window);
+    const auto dock=whm::layout::nearestDock(current.outer,now.x,now.y);
+    if(whm::layout::nearDock(current.outer,now.x,now.y,dock)) {
+        whm::layout::Input input;input.original=current.outer;input.area=current.fullscreen?current.monitor:current.area;
+        input.dock=dock;input.vertical=dock!=whm::layout::Dock::Bottom;input.autoFit=false;input.sideWidth=g_sideWidth;
+        target=whm::layout::plan(input).panel;
+    }
+    SetWindowPos(g_dragGhost,nullptr,target.x,target.y,target.w,target.h,SWP_NOZORDER|SWP_NOACTIVATE);
+
 }
 void beginDrag(HWND hwnd) {
     RECT r{};GetWindowRect(hwnd,&r);GetCursorPos(&g_dragMouse);g_dragWindow={r.left,r.top};
@@ -530,14 +544,18 @@ void beginDrag(HWND hwnd) {
         cls.lpszClassName,L"HUD drag preview",WS_POPUP,r.left,r.top,r.right-r.left,r.bottom-r.top,
         SokuLib::window,nullptr,g_module,nullptr);
     if(!g_dragGhost){DeleteObject(g_dragBitmap);g_dragBitmap=nullptr;return;}
-    SetLayeredWindowAttributes(g_dragGhost,0,145,LWA_ALPHA);g_dragging=true;SetCapture(hwnd);
+    SetLayeredWindowAttributes(g_dragGhost,0,145,LWA_ALPHA);g_dragging=true;g_dragStarted=GetTickCount();
     const HWND z=(GetWindowLongW(SokuLib::window,GWL_EXSTYLE)&WS_EX_TOPMOST)?HWND_TOPMOST:HWND_TOP;
     SetWindowPos(g_dragGhost,z,r.left,r.top,r.right-r.left,r.bottom-r.top,SWP_NOACTIVATE|SWP_SHOWWINDOW);
-    ShowWindow(hwnd,SW_HIDE);
+    // Hiding the captured window cancels capture under Wine/Proton. Keep a
+    // near-transparent live input window and capture only after setup.
+    SetWindowLongW(hwnd,GWL_EXSTYLE,GetWindowLongW(hwnd,GWL_EXSTYLE)|WS_EX_LAYERED);
+    SetLayeredWindowAttributes(hwnd,0,1,LWA_ALPHA);SetCapture(hwnd);
 }
 void endDrag(bool commit=true) {
     if(!g_dragging)return;
     g_dragging=false;ReleaseCapture();
+    SetWindowLongW(g_panel,GWL_EXSTYLE,GetWindowLongW(g_panel,GWL_EXSTYLE)&~WS_EX_LAYERED);
     if(g_dragGhost){DestroyWindow(g_dragGhost);g_dragGhost=nullptr;}
     if(g_dragBitmap){DeleteObject(g_dragBitmap);g_dragBitmap=nullptr;}
     if(commit){POINT p{};GetCursorPos(&p);
@@ -548,26 +566,10 @@ void pollPanelInput() {
     const HWND game=SokuLib::window;
     if(g_dragging) {
         if(!panelOwnsForeground(game)||!g_panelWanted.load()){endDrag(false);return;}
-        if(!(GetAsyncKeyState(VK_LBUTTON)&0x8000)){endDrag();return;}
+        if(GetTickCount()-g_dragStarted>160&&!(GetAsyncKeyState(VK_LBUTTON)&0x8000)){endDrag();return;}
         moveDragPreview();return;
     }
-    static bool held[3]{};
-    const int keys[]={g_toggleKey,g_layoutKey,g_positionKey};
-    const bool mods=(!(g_hotkeyModifiers&MOD_CONTROL)||(GetAsyncKeyState(VK_CONTROL)&0x8000))&&
-        (!(g_hotkeyModifiers&MOD_SHIFT)||(GetAsyncKeyState(VK_SHIFT)&0x8000))&&
-        (!(g_hotkeyModifiers&MOD_ALT)||(GetAsyncKeyState(VK_MENU)&0x8000));
-    const bool enabled=game&&panelOwnsForeground(game)&&g_panelWanted.load();
-    for(int n=0;n<3;++n) {
-        const bool down=keys[n]>0&&keys[n]<256&&(GetAsyncKeyState(keys[n])&0x8000);
-        if(enabled&&mods&&down&&!held[n]) {
-            if(n==0){g_hidden.store(!g_hidden.load());if(!g_hidden)g_collapsed.store(false);saveHudPreferences();}
-            if(n==1){if(g_vertical)chooseDock(whm::layout::Dock::Bottom);else chooseDock(whm::layout::Dock::Right);}
-            if(n==2)chooseDock(g_dock==whm::layout::Dock::Bottom?whm::layout::Dock::Left:
-                g_dock==whm::layout::Dock::Left?whm::layout::Dock::Right:whm::layout::Dock::Bottom);
-            g_lastPaint=0;
-        }
-        held[n]=down;
-    }
+
 }
 
 bool systemCursorVisible() {
@@ -712,17 +714,29 @@ void refreshPanel() {
     if(g_dragging)return;
     if(!current.supported){ShowWindow(g_panel,SW_HIDE);return;}
     releaseCursorRestrictions();
-    // Only the first visible expanded layout may alter game geometry. All
-    // later docking, folding, scene transitions and manual resizes follow it.
+    // Initial placement and an explicit bottom selection may fit the game.
+    // Automatic side changes and ordinary following never resize it.
+    const bool wasPending=g_initialFit.pending();
     g_initialFit.poll(current,now);
+    if(wasPending&&!g_initialFit.pending()) {
+        g_lastDockGame=current.outer;g_lastDockArea=current.area;g_dockBaseline=true;
+    }
     if(g_initialFit.pending()){ShowWindow(g_panel,SW_HIDE);return;}
     whm::layout::Input input;input.original=current.outer;input.borders=current.borders;
     input.area=current.fullscreen?current.monitor:current.area;
+    if(g_initialFit.used()&&!current.fullscreen&&!g_collapsed.load()) {
+        if(g_dockBaseline&&(current.outer!=g_lastDockGame||current.area!=g_lastDockArea)) {
+            const auto dock=whm::layout::automaticDock(current.outer,current.area,g_dock,g_sideWidth);
+            if(dock!=g_dock)chooseDock(dock,false);
+        }
+    }
+    g_lastDockGame=current.outer;g_lastDockArea=current.area;g_dockBaseline=true;
     input.dock=g_dock;input.vertical=g_vertical;input.sideWidth=g_sideWidth;
     input.fullscreen=current.fullscreen;
-    input.autoFit=!g_initialFit.used()&&g_autoFit&&!g_collapsed.load();
+    input.autoFit=!g_initialFit.used()&&(g_autoFit||g_bottomFitRequested)&&!g_collapsed.load();
     auto planned=whm::layout::plan(input);
     if(!g_collapsed&&!g_initialFit.used()) {
+        g_bottomFitRequested=false;
         if(g_initialFit.apply(game,current.outer,planned.game,now)) {
             traceLayout("initial-fit",planned.game);ShowWindow(g_panel,SW_HIDE);return;
         }
@@ -942,16 +956,12 @@ void loadSettings() {
     const std::wstring chosen(language);
     g_language.store(chosen == L"JP" ? 1 : chosen == L"EN" ? 2 : 0);
     g_collapsed.store(GetPrivateProfileIntW(L"HUD", L"Collapsed", 0, ini.c_str()) != 0);
-    g_hidden.store(GetPrivateProfileIntW(L"HUD",L"Hidden",0,ini.c_str())!=0);
+    g_hidden.store(false);
     g_vertical.store(GetPrivateProfileIntW(L"HUD",L"Vertical",0,ini.c_str())!=0);
     g_dock=static_cast<whm::layout::Dock>(std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"Dock",0,ini.c_str()),0,2));
     g_vertical.store(g_dock!=whm::layout::Dock::Bottom);
     g_autoFit=GetPrivateProfileIntW(L"HUD",L"AutoFit",1,ini.c_str())!=0;
     g_sideWidth=std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"SideWidth",240,ini.c_str()),120,600);
-    g_hotkeyModifiers=GetPrivateProfileIntW(L"Hotkeys",L"Modifiers",6,ini.c_str());
-    g_toggleKey=GetPrivateProfileIntW(L"Hotkeys",L"Toggle",'H',ini.c_str());
-    g_layoutKey=GetPrivateProfileIntW(L"Hotkeys",L"Layout",'O',ini.c_str());
-    g_positionKey=GetPrivateProfileIntW(L"Hotkeys",L"Position",'P',ini.c_str());
     // 1602 sourced rows: character, card, notation, zh-CN, en, ja, source.
     // Index 0/1/2 of names follows HudLanguage (Chinese/Japanese/English).
     std::ifstream names(folder/L"MoveNames.tsv");

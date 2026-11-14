@@ -49,17 +49,11 @@ To update, back up the old folder, close the game, and replace the files with th
 - **Current hand**: estimated spell damage in hand order.
 - The **CN / JP / EN** button cycles languages. Two direction buttons switch to the other dock positions; the bold up button collapses the panel. A translucent **＋** inside the game’s bottom-right corner expands it. Preferences are saved automatically.
 
-**Window layouts (0.5.1 onward):** dock below, left or right. Portrait panels match the game window’s height; the bottom panel sits flush against it. Only the first expanded layout per launch may adjust the game client area, keeping 4:3. Hiding, collapsing, docking and leaving battle never change game size afterward. The HUD follows manual game-window changes.
+**Window layouts (0.5.2 onward):** use the panel buttons or drag to select bottom, left or right; there are no keyboard shortcuts. Portrait matches the game height; landscape sits flush below it. Initial placement may fit the game at 4:3. Explicitly selecting bottom also permits a new adjustment, including WindowResizer borderless fullscreen. Other changes, collapsing and leaving battle do not resize the game.
 
-| Action | Default shortcut |
-| --- | --- |
-| Hide / show HUD | Ctrl + Shift + H |
-| Switch horizontal / vertical | Ctrl + Shift + O |
-| Cycle bottom / left / right | Ctrl + Shift + P |
+In windowed mode, moving the game until the bottom HUD no longer fits switches to the roomier side. A cramped sidebar switches only if the other side offers materially more room; equally cramped sides stay stable. The translucent static drag preview follows the pointer freely and snaps only near an edge; releasing docks below/left/right. Damage recording continues.
 
-Shortcuts work during battle while the game has focus. Drag a non-button area to move a translucent static preview; damage recording continues. Releasing docks to the nearest bottom/left/right edge; free floating is unavailable. The HUD hides when leaving battle or switching applications.
-
-Supports ordinary windows and **WindowResizer borderless fullscreen**, not exclusive fullscreen. If a chosen edge lacks room, the HUD reduces its own size or overlays that game edge when no usable outside space remains; it does not force another game resize. Set `[HUD] AutoFit=0` in `SokuMaxDamageHUD.ini` to disable the first adjustment, `SideWidth` for portrait width, or `[Hotkeys]` to change shortcuts.
+Supports ordinary windows and **WindowResizer borderless fullscreen**, not exclusive fullscreen. `[HUD] AutoFit=0` in `SokuMaxDamageHUD.ini` disables initial fitting; explicitly selecting bottom still permits adjustment. `SideWidth` sets portrait width. The HUD hides outside supported battles or when another application has focus.
 
 ## Limitations
 

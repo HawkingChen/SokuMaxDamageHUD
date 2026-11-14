@@ -144,6 +144,17 @@ static void testPanelLayouts() {
     for(int n=0;n<4;++n){auto b=portraitButtons[n];auto mapped=canonicalPoint(true,b.x+14,b.y+14);
         assert(mapped.first==924+(n%2)*34&&mapped.second==218+(n/2)*34);}
     assert(canonicalPoint(true,10,5).first==-1); // draggable header, not a button
+    const Rect desktop{0,0,1920,1080};
+    assert(automaticDock({200,450,960,600},desktop,Dock::Bottom,240)==Dock::Right);
+    assert(automaticDock({700,450,960,600},desktop,Dock::Bottom,240)==Dock::Left);
+    assert(automaticDock({10,20,960,720},desktop,Dock::Left,240)==Dock::Right);
+    assert(automaticDock({940,20,960,720},desktop,Dock::Right,240)==Dock::Left);
+    for(Rect r:std::vector<Rect>{{0,0,1920,1080},{10,0,1900,1080},{120,0,1680,1080}}) {
+        auto d=automaticDock(r,desktop,Dock::Bottom,240);
+        for(int n=0;n<100;++n)assert(automaticDock(r,desktop,d,240)==d);
+    }
+    assert(nearDock(game,game.x-12,300,Dock::Left));
+    assert(!nearDock(game,game.x-100,300,Dock::Left));
     PendingResize pending;Rect original{0,0,1280,960},target{0,0,960,720};
     assert(pending.request(original,target,100));
     assert(!pending.request(original,{0,0,800,600},200)); // no queued resize race

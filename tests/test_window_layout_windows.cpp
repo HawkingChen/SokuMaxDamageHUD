@@ -56,6 +56,17 @@ int main() {
   }
   geometry.poll(window::snapshot(h),GetTickCount());
   assert(!geometry.apply(h,original.outer,planned.game,GetTickCount()));
+  // Only an explicit bottom action rearms the resize permission.
+  geometry.allowBottomSelection();
+  assert(geometry.apply(h,original.outer,planned.game,GetTickCount()));
+  start=GetTickCount();
+  do {Sleep(1);geometry.poll(window::snapshot(h),GetTickCount());}
+  while(geometry.pending()&&GetTickCount()-start<2000);
+  assert(!geometry.pending()&&!geometry.blocked());
+  assert(SetWindowPos(h,nullptr,original.outer.x,original.outer.y,original.outer.w,original.outer.h,
+      SWP_NOACTIVATE|SWP_NOZORDER|SWP_ASYNCWINDOWPOS));
+  start=GetTickCount();
+  while(!layout::closeRect(window::snapshot(h).outer,original.outer)&&GetTickCount()-start<2000)Sleep(1);
   assert(layout::closeRect(window::snapshot(h).outer,original.outer));
  }
  assert(observedSizes>=16&&badRatios==0);

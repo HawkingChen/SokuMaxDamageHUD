@@ -20,7 +20,7 @@ inline Snapshot snapshot(HWND game) {
  // WindowResizer renders a windowed 4:3 game and a separate bars window.
  // Never resize a possible exclusive D3D fullscreen window.
  const bool resizer=GetModuleHandleW(L"WindowResizer.dll")!=nullptr;
- s.fullscreen=frameless&&covers;
+ s.fullscreen=frameless&&(covers||resizer);
  s.supported=!(frameless&&covers&&!resizer);
  return s;
 }
@@ -30,6 +30,8 @@ class InitialFit {
  bool used_=false;layout::PendingResize pending_{};
 public:
  bool used()const{return used_;}
+ // Explicit bottom selection grants one additional bounded request.
+ void allowBottomSelection(){if(!pending_.pending){used_=false;pending_={};}}
  bool pending()const{return pending_.pending;}
  bool blocked()const{return pending_.blocked;}
  void poll(Snapshot s,unsigned now){pending_.ready(s.outer,now);}
