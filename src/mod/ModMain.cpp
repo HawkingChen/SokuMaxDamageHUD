@@ -449,8 +449,19 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         if(lookupId>=0) {
             const whm::Move *profile=g_catalog.find(view.character,kind,lookupId,level);
             if(profile&&profile->verifiedFullHit) {
-                const auto e=whm::estimate(*profile,rankOwn,rankTarget);
-                if(e.valid&&e.complete)ordinary=e.damage;
+                whm::EstimateOptions opts;
+                if(kind==whm::MoveKind::Skill) {
+                    if(view.character==17&&view.forcedFirstHitArmed)
+                        opts.openingCounterFactor=whm::meilingTigerFirstHitFactor(
+                            true,tigerFirstHitScale);
+                    else if(view.weather==16&&!view.weatherSealed&&freshCombo)
+                        opts.openingCounterFactor=4./3.;
+                }
+                // Verified profile includes real hit order, rate/limit and
+                // current HP guts changes, plus a sourced CH bit per hit.
+                // Its first-hit calculation is final: never boost it again.
+                const auto e=whm::estimate(*profile,rankOwn,rankTarget,opts);
+                if(e.valid&&e.complete)return e.damage;
             }
         }
         if(m.kind=="spell") {
