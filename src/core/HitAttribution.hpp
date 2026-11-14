@@ -147,6 +147,12 @@ public:
         if(isSpellFollowupAction(after.action) && afterOrigin.valid() &&
            afterOrigin.action==canonicalAttackAction(after.action))
             return afterOrigin;
+        // Final cinematic strike may coincide with 659 -> idle. Only
+        // attribute the frame's hit to the still-active preceding SC
+        // ALT_EFFECT; no long-lasting "recently used SC" fallback.
+        if(isSpellFollowupAction(before.action) && beforeOrigin.valid() &&
+           beforeOrigin.action==canonicalAttackAction(before.action))
+            return beforeOrigin;
         return {};
     }
 };
