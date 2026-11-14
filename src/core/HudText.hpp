@@ -14,7 +14,7 @@ namespace whm {
 enum class HudLanguage { Chinese = 0, Japanese = 1, English = 2 };
 
 enum class HudTextKey {
-    PanelTitle, Strongest, Record, Hand, SpellMax,
+    PanelTitle, Strongest, StrongestNormal, Record, Hand, SpellMax,
     NoEffects, NoHand, NoSkill, NoRecord,
     Theoretical, MatchBest, Weather, Unknown,
     SpecialType, SpellType, Guts, FirstHit,
@@ -28,6 +28,7 @@ struct HudTextEntry {
 inline constexpr HudTextEntry kHudTexts[] = {
     /* PanelTitle  */ {"伤害影响 · 总修正", "ダメージ補正", "DAMAGE · TOTAL MODS"},
     /* Strongest   */ {"最痛必杀技", "最大ダメージ必殺技", "STRONGEST SPECIAL"},
+    /* StrongestNormal */ {"最痛普通技", "最大ダメージ通常技", "STRONGEST NORMAL"},
     /* Record      */ {"最痛记录", "最大ダメージ記録", "BEST HIT"},
     /* Hand        */ {"当前手牌", "手札", "CURRENT HAND"},
     /* SpellMax    */ {"符卡最大伤害", "スペカ最大値", "MAX SPELL DMG"},
