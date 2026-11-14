@@ -1,0 +1,38 @@
+name: Assemble original-resolution README screenshot
+on:
+  push:
+    branches:
+      - agent/gpt6-release-notes-screenshot-quality-20261115
+    paths:
+      - "docs/_screenshot_parts/READY"
+permissions:
+  contents: write
+jobs:
+  screenshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Assemble high-quality original-resolution WebP from authenticated upload
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, pathlib
+          p = pathlib.Path('docs/_screenshot_parts')
+          chunks = sorted(p.glob('*.b64'))
+          assert len(chunks) == 11, f'Unexpected screenshot parts: {len(chunks)}'
+          encoded = ''.join(x.read_text('ascii') for x in chunks)
+          data = base64.b64decode(encoded, validate=True)
+          assert len(data) == 65032, f'Unexpected image size: {len(data)}'
+          assert data[:4] == b'RIFF' and data[8:12] == b'WEBP'
+          dest = pathlib.Path('docs/hud-sidebar-fullscreen.webp')
+          dest.write_bytes(data)
+          print('README screenshot:', dest, len(data), hashlib.sha256(data).hexdigest())
+          PY
+      - name: Commit corrected original-size screenshot to this branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/hud-sidebar-fullscreen.webp
+          git commit -m "docs: restore full-resolution sharp sidebar screenshot"
+          git push origin HEAD:agent/gpt6-release-notes-screenshot-quality-20261115
