@@ -118,6 +118,80 @@ static void testProjectileRecords() {
     assert(!expired.observe(idle,idle,{}, {sunChild}).valid());
 }
 
+static void testSpellFollowupAttribution() {
+    using namespace whm;
+    // SokuLib Action.hpp: every SC200..219 has an ALT_EFFECT in 650..669.
+    // Meiling SC209: 609 (activation), 659 (follow-up) are the SAME card.
+    static_assert(isSpellActivationAction(609));
+    static_assert(isSpellFollowupAction(659));
+    static_assert(spellCardForAction(609)==209);
+    static_assert(spellCardForAction(659)==209);
+    static_assert(spellCardForAction(658)==208);
+    static_assert(cardForAction(17,659)==209);
+    static_assert(cardForAction(17,609)==209);
+    static_assert(cardForAction(17,669)==219);
+    static_assert(cardForAction(17,670)==-1);
+    static_assert(canonicalAttackAction(659)==609);
+    static_assert(canonicalAttackAction(608)==608);
+    HitAttribution source;
+    ActorContact idle;
+    ActorContact activation;
+    activation.action=609;activation.sequence=1;activation.animationFrame=12;
+    activation.collision=1;activation.limit=2;activation.hitBoxes=true;
+    const auto first=source.observe(idle,activation,{},{});
+    assert(first.valid()&&first.action==609);
+    RecordTracker record;
+    record.observeDamage(900,first.action,20,first.instance);
+
+    ActorContact cinematic;
+    cinematic.action=659;cinematic.sequence=0;cinematic.animationFrame=0;
+    // Direct scripted strike may not expose an ordinary box transition.
+    auto follow=source.observe(activation,cinematic,{},{});
+    assert(follow==first);
+    record.observeDamage(1300,follow.action,21,follow.instance);
+    cinematic.sequence=4;cinematic.animationFrame=25;
+    follow=source.observe(cinematic,cinematic,{},{});
+    assert(follow==first);
+    record.observeDamage(2000,follow.action,27,follow.instance);
+    // ALT_EFFECT sequence reset is not a second card use.
+    ActorContact nextSequence=cinematic;
+    nextSequence.sequence=0;nextSequence.animationFrame=0;
+    follow=source.observe(cinematic,nextSequence,{},{});
+    assert(follow==first);
+    record.observeDamage(500,follow.action,32,follow.instance);
+    assert(record.best().damage==4700);
+    assert(record.best().actionId==609&&record.best().isSpell);
+
+    // A fresh SC209 activation after ALT_EFFECT is a distinct spell cast.
+    ActorContact recast=activation;
+    recast.sequence=0;recast.animationFrame=0;
+    const auto second=source.observe(nextSequence,recast,{},{});
+    assert(second.valid()&&second.action==609&&second.instance!=first.instance);
+    record.observeDamage(700,second.action,70,second.instance);
+    assert(record.best().damage==4700);
+    source.observe(recast,idle,{},{});
+    assert(!source.observe(idle,idle,{},{}).valid());
+
+    // Do not invent attribution from an idle fighter or ambiguous hits.
+    HitAttribution ambiguous;
+    ActorContact otherCast=activation;otherCast.action=608;
+    ProjectileContact firstBullet{1,0,1,0,1,0,true,true};
+    const auto oldCast=ambiguous.observe(otherCast,otherCast,{}, {firstBullet});
+    assert(oldCast.valid()&&oldCast.action==608);
+    ProjectileContact secondBullet{2,0,1,0,1,0,true,true};
+    const auto newer=ambiguous.observe(activation,cinematic,{firstBullet},{firstBullet,secondBullet});
+    assert(newer.valid()&&newer.action==609);
+    auto hitOld=firstBullet;hitOld.collision=1;hitOld.limit=0;
+    auto hitNew=secondBullet;hitNew.collision=1;hitNew.limit=0;
+    assert(!ambiguous.observe(cinematic,cinematic,
+        {firstBullet,secondBullet},{hitOld,hitNew}).valid());
+
+    assert(std::string(hudText(HudTextKey::SpecialType,HudLanguage::English))=="SKILL");
+    assert(std::string(hudText(HudTextKey::SpellType,HudLanguage::English))=="SC");
+    assert(std::string(hudText(HudTextKey::SpecialType,HudLanguage::Chinese))=="必杀技");
+    assert(std::string(hudText(HudTextKey::SpellType,HudLanguage::Japanese))=="スペカ");
+}
+
 static void testHudRoundingModes() {
     const int original=std::fegetround();
     for(int mode:{FE_TONEAREST,FE_UPWARD,FE_DOWNWARD,FE_TOWARDZERO}) {
@@ -241,6 +315,7 @@ int main() {
     testPanelLayouts();
     testHudRoundingModes();
     testProjectileRecords();
+    testSpellFollowupAttribution();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
     assert(mergeSkillButtons("623B","j.623C")=="623B");
