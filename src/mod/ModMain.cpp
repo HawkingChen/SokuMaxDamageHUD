@@ -14,6 +14,7 @@
 #include "HudText.hpp"
 #include "HudPalette.hpp"
 #include "FirstHit.hpp"
+#include "MeilingTiger.hpp"
 #include "HitSnapshots.hpp"
 #include "GameAssets.hpp"
 
@@ -352,6 +353,11 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
     // the "根性补正" row are byte-identical strings in the same snapshot.
     view.gutsText=whm::gutsLabel(view.hpFactor);
     collectDamageEffects(view,&ownCounters,&enemyCounters);
+    // Capture the original +0x198 Tiger scale before the first-hit percentage
+    // display overwrites it with a combo/animation-gated presentation value.
+    // The highest theoretical move assumes a fresh first melee hit, so only
+    // the live buff timer and unconsumed forced-CH state gate that estimate.
+    const double tigerFirstHitScale=view.firstHitMultiplier;
     // Weather text follows effective weather / seal, not the global name.
     view.weatherVisible=whm::weatherLabelVisible(view.weather,view.weatherSealed,
                                                  view.skillMultiplier,view.spellMultiplier);
@@ -373,8 +379,9 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
     signals.attackPowerAlreadyIncludes=false; // still needs 1.10a verification
     const whm::FirstHitDecision hit=whm::evaluateFirstHit(signals);
     view.basePercent=whm::commonPercent(view.attack,view.defense,{});
-    // The big percentage may describe the NEXT first hit; whole-move damage
-    // estimates below deliberately do not use this first-hit-only factor.
+    // The big percentage describes the immediate next first hit; highest
+    // theoretical Meiling melee specials below additionally use the buff's
+    // first-hit-only correction, not a whole-move boost to all attacks.
     view.commonPercent=whm::commonPercent(view.attack,view.defense,hit);
     view.firstHitActive=hit.applies;
     view.firstHitMultiplier=hit.applies?hit.multiplier:1.;
@@ -383,7 +390,14 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         double type=m.kind=="spell"?own->spellDmgMultiplier:m.kind=="skill"?own->specialDmgMultiplier:1.;
         double multiplier=view.attack*view.defense*type;
         if (!std::isfinite(multiplier)||multiplier<=0||multiplier>50)return 0;
-        return static_cast<int>(m.damage*multiplier*whm::gutsFactor(enemy->HP));
+        const double effective=multiplier*whm::gutsFactor(enemy->HP);
+        if (m.kind=="skill" && view.character==17)
+            return whm::meilingTigerAdjustedDamage(
+                view.character,m.card,m.damage,effective,
+                view.forcedFirstHitArmed,tigerFirstHitScale);
+        // Spells and all other characters retain their existing estimate.
+        // CH must not be applied to projectile skill damage or entire multi-hits.
+        return static_cast<int>(m.damage*effective);
     };
     std::string bestNotation,bestName;
     for(const auto &m:g_staticMoves){
