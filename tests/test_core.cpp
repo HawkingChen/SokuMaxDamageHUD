@@ -108,19 +108,41 @@ static void testPanelLayouts() {
                 assert(result.game.x>=area.x&&result.game.y>=area.y);
                 assert(result.game.x+result.game.w<=area.x+area.w);
                 assert(result.game.y+result.game.h<=area.y+area.h);
+                if(dock!=Dock::Bottom)assert(result.panel.h==result.game.h&&result.panel.y==result.game.y);
                 assert(result.panel.x>=area.x&&result.panel.y>=area.y);
                 assert(result.panel.x+result.panel.w<=area.x+area.w);
                 assert(result.panel.y+result.panel.h<=area.y+area.h);
                 for(int n=0;n<100;++n)assert(plan(input).game==result.game);
             }
             input.autoFit=false;assert(plan(input).game==input.original);
-            input.autoFit=true;input.dock=Dock::Free;assert(plan(input).game==input.original);
+            for(auto dock:{Dock::Bottom,Dock::Left,Dock::Right}) {
+                input.dock=dock;input.vertical=dock!=Dock::Bottom;
+                auto following=plan(input);assert(following.game==input.original);
+                if(dock!=Dock::Bottom)assert(following.panel.h==following.game.h&&following.panel.y==following.game.y);
+            }
         }
     }
     Input wide;wide.original={240,0,1440,1080};wide.area={0,0,1920,1080};
     wide.fullscreen=true;wide.vertical=true;wide.dock=Dock::Right;
     assert(plan(wide).game.w==1440&&plan(wide).game.h==1080);
-    auto point=canonicalPoint(true,330,50);assert(point.first==924&&point.second==218);
+    auto point=canonicalPoint(true,320,20);assert(point.first==916&&point.second==214);
+    Input flush;flush.area={0,0,1920,1080};flush.original={300,60,960,720};flush.autoFit=false;
+    assert(plan(flush).panel.y==780); // no artificial gap at bottom
+    flush.dock=Dock::Right;flush.vertical=true;
+    assert(plan(flush).panel.x==1260&&plan(flush).panel.y==60&&plan(flush).panel.h==720);
+    flush.dock=Dock::Left;assert(plan(flush).panel.x+plan(flush).panel.w==300);
+    flush.original={0,0,1920,1080};assert(plan(flush).game==flush.original&&plan(flush).panel.x==0); // no margin: overlay, no resize
+    const Rect game{300,100,960,720};
+    assert(nearestDock(game,200,300)==Dock::Left);
+    assert(nearestDock(game,1400,300)==Dock::Right);
+    assert(nearestDock(game,700,950)==Dock::Bottom);
+    assert(nearestDock(game,700,700)==Dock::Bottom);
+    for(auto d:{Dock::Bottom,Dock::Left,Dock::Right}) {
+        auto alternatives=alternateDocks(d);assert(alternatives[0]!=d&&alternatives[1]!=d&&alternatives[0]!=alternatives[1]);
+    }
+    auto plus=foldedButton(game,{8,31,8,8});assert(plus.x+plus.w==game.x+game.w-16&&plus.y+plus.h==game.y+game.h-16);
+    for(int n=0;n<4;++n){auto b=portraitButtons[n];auto mapped=canonicalPoint(true,b.x+14,b.y+14);
+        assert(mapped.first==924+(n%2)*34&&mapped.second==218+(n/2)*34);}
     assert(canonicalPoint(true,10,5).first==-1); // draggable header, not a button
     PendingResize pending;Rect original{0,0,1280,960},target{0,0,960,720};
     assert(pending.request(original,target,100));

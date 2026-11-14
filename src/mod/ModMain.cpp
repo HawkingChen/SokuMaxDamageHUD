@@ -74,7 +74,7 @@ std::atomic<bool> g_vertical{false};
 std::atomic<bool> g_hidden{false};
 whm::layout::Dock g_dock=whm::layout::Dock::Bottom; // UI thread only after load
 bool g_autoFit=true;
-int g_sideWidth=240,g_freeX=0,g_freeY=0;
+int g_sideWidth=240;
 unsigned g_hotkeyModifiers=MOD_CONTROL|MOD_SHIFT;
 int g_toggleKey='H',g_layoutKey='O',g_positionKey='P';
 struct MoveNameEntry { std::array<std::string, 3> names; };
@@ -106,10 +106,7 @@ void saveHudPreferences() {
     WritePrivateProfileStringW(L"HUD",L"Vertical",g_vertical?L"1":L"0",ini.c_str());
     WritePrivateProfileStringW(L"HUD",L"Hidden",g_hidden?L"1":L"0",ini.c_str());
     const auto dock=std::to_wstring(static_cast<int>(g_dock));
-    const auto x=std::to_wstring(g_freeX),y=std::to_wstring(g_freeY);
     WritePrivateProfileStringW(L"HUD",L"Dock",dock.c_str(),ini.c_str());
-    WritePrivateProfileStringW(L"HUD",L"FreeX",x.c_str(),ini.c_str());
-    WritePrivateProfileStringW(L"HUD",L"FreeY",y.c_str(),ini.c_str());
 }
 
 // Check that the SokuLib runtime enum values match the portable mapping.
@@ -489,8 +486,10 @@ HWND g_panel = nullptr;
 std::atomic<bool> g_panelWanted{false};
 std::vector<HudRow> g_panelRows;
 std::atomic<int> g_cursorLogicalX{-1}, g_cursorLogicalY{-1};
-whm::window::Geometry g_geometry;
+whm::window::InitialFit g_initialFit;
 bool g_dragging=false;
+HWND g_dragGhost=nullptr;
+HBITMAP g_dragBitmap=nullptr;
 POINT g_dragMouse{},g_dragWindow{};
 unsigned g_lastPaint=0;
 std::ofstream g_layoutLog;
@@ -499,32 +498,58 @@ void traceLayout(const char *event,whm::layout::Rect r) {
     if(g_layoutLog)g_layoutLog<<GetTickCount()<<" "<<event<<" "<<r.x<<","<<r.y<<" "<<r.w<<"x"<<r.h<<std::endl;
 }
 void chooseDock(whm::layout::Dock dock) {
-    g_dock=dock;
-    if(dock!=whm::layout::Dock::Free)g_vertical.store(dock!=whm::layout::Dock::Bottom);
-    saveHudPreferences();
+    g_dock=dock;g_vertical.store(dock!=whm::layout::Dock::Bottom);
+    g_lastPaint=0;saveHudPreferences();
 }
-void endDrag() {
+LRESULT CALLBACK ghostProc(HWND h,UINT m,WPARAM w,LPARAM l) {
+    if(m==WM_PAINT) {
+        PAINTSTRUCT ps{};HDC dc=BeginPaint(h,&ps);
+        if(g_dragBitmap){HDC source=CreateCompatibleDC(dc);auto old=SelectObject(source,g_dragBitmap);
+            BITMAP bm{};GetObjectW(g_dragBitmap,sizeof(bm),&bm);BitBlt(dc,0,0,bm.bmWidth,bm.bmHeight,source,0,0,SRCCOPY);
+            SelectObject(source,old);DeleteDC(source);}
+        EndPaint(h,&ps);return 0;
+    }
+    return DefWindowProcW(h,m,w,l);
+}
+void moveDragPreview() {
+    if(!g_dragging||!g_dragGhost)return;
+    POINT now{};GetCursorPos(&now);
+    SetWindowPos(g_dragGhost,nullptr,g_dragWindow.x+now.x-g_dragMouse.x,
+        g_dragWindow.y+now.y-g_dragMouse.y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+}
+void beginDrag(HWND hwnd) {
+    RECT r{};GetWindowRect(hwnd,&r);GetCursorPos(&g_dragMouse);g_dragWindow={r.left,r.top};
+    HDC source=GetDC(hwnd),mem=CreateCompatibleDC(source);
+    g_dragBitmap=CreateCompatibleBitmap(source,r.right-r.left,r.bottom-r.top);
+    if(g_dragBitmap){auto old=SelectObject(mem,g_dragBitmap);
+        BitBlt(mem,0,0,r.right-r.left,r.bottom-r.top,source,0,0,SRCCOPY);SelectObject(mem,old);}
+    DeleteDC(mem);ReleaseDC(hwnd,source);if(!g_dragBitmap)return;
+    WNDCLASSW cls{};cls.lpfnWndProc=ghostProc;cls.hInstance=g_module;cls.lpszClassName=L"SokuMaxDamageHUDDrag";
+    RegisterClassW(&cls);
+    g_dragGhost=CreateWindowExW(WS_EX_LAYERED|WS_EX_TRANSPARENT|WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,
+        cls.lpszClassName,L"HUD drag preview",WS_POPUP,r.left,r.top,r.right-r.left,r.bottom-r.top,
+        SokuLib::window,nullptr,g_module,nullptr);
+    if(!g_dragGhost){DeleteObject(g_dragBitmap);g_dragBitmap=nullptr;return;}
+    SetLayeredWindowAttributes(g_dragGhost,0,145,LWA_ALPHA);g_dragging=true;SetCapture(hwnd);
+    const HWND z=(GetWindowLongW(SokuLib::window,GWL_EXSTYLE)&WS_EX_TOPMOST)?HWND_TOPMOST:HWND_TOP;
+    SetWindowPos(g_dragGhost,z,r.left,r.top,r.right-r.left,r.bottom-r.top,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    ShowWindow(hwnd,SW_HIDE);
+}
+void endDrag(bool commit=true) {
     if(!g_dragging)return;
     g_dragging=false;ReleaseCapture();
-    auto game=SokuLib::window;RECT wr{};GetWindowRect(g_panel,&wr);
-    const auto snap=whm::window::snapshot(game);
-    const auto base=g_geometry.active()?g_geometry.original().outer:snap.outer;
-    const int right=wr.right,bottom=wr.bottom;
-    if(std::abs(wr.left-(snap.outer.x+snap.outer.w))<32||std::abs(right-(snap.area.x+snap.area.w))<24)
-        chooseDock(whm::layout::Dock::Right);
-    else if(std::abs(right-snap.outer.x)<32||std::abs(wr.left-snap.area.x)<24)
-        chooseDock(whm::layout::Dock::Left);
-    else if(std::abs(wr.top-(snap.outer.y+snap.outer.h))<32||std::abs(bottom-(snap.area.y+snap.area.h))<24)
-        chooseDock(whm::layout::Dock::Bottom);
-    else {g_freeX=wr.left-base.x;g_freeY=wr.top-base.y;chooseDock(whm::layout::Dock::Free);}
+    if(g_dragGhost){DestroyWindow(g_dragGhost);g_dragGhost=nullptr;}
+    if(g_dragBitmap){DeleteObject(g_dragBitmap);g_dragBitmap=nullptr;}
+    if(commit){POINT p{};GetCursorPos(&p);
+        chooseDock(whm::layout::nearestDock(whm::window::snapshot(SokuLib::window).outer,p.x,p.y));}
+    g_lastPaint=0;
 }
 void pollPanelInput() {
     const HWND game=SokuLib::window;
     if(g_dragging) {
-        if(!panelOwnsForeground(game)||!(GetAsyncKeyState(VK_LBUTTON)&0x8000)){endDrag();return;}
-        POINT now{};GetCursorPos(&now);
-        SetWindowPos(g_panel,nullptr,g_dragWindow.x+now.x-g_dragMouse.x,g_dragWindow.y+now.y-g_dragMouse.y,
-            0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+        if(!panelOwnsForeground(game)||!g_panelWanted.load()){endDrag(false);return;}
+        if(!(GetAsyncKeyState(VK_LBUTTON)&0x8000)){endDrag();return;}
+        moveDragPreview();return;
     }
     static bool held[3]{};
     const int keys[]={g_toggleKey,g_layoutKey,g_positionKey};
@@ -599,19 +624,21 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         view.language=static_cast<whm::HudLanguage>(std::clamp(g_language.load(),0,2));
         view.collapsed=g_collapsed.load();
         view.vertical=g_vertical.load();
+        view.dock=g_dock;
         view.cursorX=g_cursorLogicalX.load();
         view.cursorY=g_cursorLogicalY.load();
         view.systemCursorVisible=systemCursorVisible();
         paintStyledPanel(hwnd,view,dllFolder()); return 0;
     }
     if (msg == WM_MOUSEMOVE) {
+        if(g_dragging){moveDragPreview();return 0;}
         RECT client{}; GetClientRect(hwnd,&client);
         const int cw=client.right-client.left, chh=client.bottom-client.top;
         if(cw>0&&chh>0) {
             const int px=static_cast<short>(LOWORD(l));
             const int py=static_cast<short>(HIWORD(l));
             g_cursorLogicalX.store(px*(g_vertical?400:1000)/cw);
-            g_cursorLogicalY.store(py*(g_vertical?776:290)/chh);
+            g_cursorLogicalY.store(py*(g_vertical?whm::layout::portraitHeight(cw,chh):290)/chh);
         }
         TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,hwnd,0};
         TrackMouseEvent(&track);
@@ -636,7 +663,7 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         const int px=static_cast<short>(LOWORD(l));
         const int py=static_cast<short>(HIWORD(l));
         const auto canonical=whm::layout::canonicalPoint(g_vertical,
-            px*(g_vertical?400:1000)/cw,py*(g_vertical?776:290)/chh);
+            px*(g_vertical?400:1000)/cw,py*(g_vertical?whm::layout::portraitHeight(cw,chh):290)/chh);
         const int vx=canonical.first,vy=canonical.second;
         auto inside=[](int x,int y,const HudButton &b){
             return x>=b.x&&x<b.x+b.w&&y>=b.y&&y<b.y+b.h;
@@ -646,19 +673,12 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             g_collapsed.store(false); // the whole folded window is the "+"
             changed=true;
         } else {
-            for(int i=0;i<3;++i)
-                if(inside(vx,vy,kHudButtons[i])) {
-                    if(g_language.load()!=i)g_language.store(i);
-                    changed=true; break;
-                }
-            if(!changed&&inside(vx,vy,kHudButtons[3])) {
-                g_collapsed.store(true); changed=true;
-            }
+            if(inside(vx,vy,kHudButtons[0])){g_language.store((g_language.load()+1)%3);changed=true;}
+            const auto alternatives=whm::layout::alternateDocks(g_dock);
+            for(int i=1;i<=2;++i)if(inside(vx,vy,kHudButtons[i])){chooseDock(alternatives[i-1]);changed=true;}
+            if(inside(vx,vy,kHudButtons[3])){g_collapsed.store(true);changed=true;}
         }
-        if(!changed&&!g_collapsed) {
-            RECT r{};GetWindowRect(hwnd,&r);GetCursorPos(&g_dragMouse);
-            g_dragWindow={r.left,r.top};g_dragging=true;SetCapture(hwnd);
-        }
+        if(!changed&&!g_collapsed)beginDrag(hwnd);
         if(changed) {
             g_lastPaint=0;
             saveHudPreferences();
@@ -688,45 +708,32 @@ void refreshPanel() {
     if(IsIconic(game)){ShowWindow(g_panel,SW_HIDE);return;}
     const auto current=whm::window::snapshot(game);
     const bool show=battleScene&&g_panelWanted.load()&&!g_hidden.load();
-    const bool reserve=show&&!g_collapsed.load()&&g_autoFit&&g_dock!=whm::layout::Dock::Free;
-    if(!show||g_collapsed.load())g_geometry.restore(game,current,now);
-    if(!show||!panelOwnsForeground(game)) {ShowWindow(g_panel,SW_HIDE);return;}
+    if(!show||!panelOwnsForeground(game)) {if(g_dragging)endDrag(false);ShowWindow(g_panel,SW_HIDE);return;}
     if(g_dragging)return;
-    // Do not alter an exclusive D3D fullscreen window. WindowResizer's
-    // borderless mode is identifiable and keeps rendering windowed.
-    if(!current.supported){ShowWindow(g_panel,SW_HIDE);g_geometry.clear();return;}
+    if(!current.supported){ShowWindow(g_panel,SW_HIDE);return;}
     releaseCursorRestrictions();
-    if(!g_collapsed)g_geometry.synchronize(current,now);
-    const auto base=g_geometry.active()?g_geometry.original():current;
-    whm::layout::Input input;
-    input.original=base.outer;input.borders=current.borders;
-    input.area=base.fullscreen?current.monitor:current.area;
-    input.dock=g_dock;input.vertical=g_vertical;input.autoFit=reserve&&!g_geometry.blocked();
-    input.fullscreen=base.fullscreen;input.sideWidth=g_sideWidth;
-    input.freeX=g_freeX;input.freeY=g_freeY;
+    // Only the first visible expanded layout may alter game geometry. All
+    // later docking, folding, scene transitions and manual resizes follow it.
+    g_initialFit.poll(current,now);
+    if(g_initialFit.pending()){ShowWindow(g_panel,SW_HIDE);return;}
+    whm::layout::Input input;input.original=current.outer;input.borders=current.borders;
+    input.area=current.fullscreen?current.monitor:current.area;
+    input.dock=g_dock;input.vertical=g_vertical;input.sideWidth=g_sideWidth;
+    input.fullscreen=current.fullscreen;
+    input.autoFit=!g_initialFit.used()&&g_autoFit&&!g_collapsed.load();
     auto planned=whm::layout::plan(input);
-    if(g_geometry.pending()) {
-        // No second resize while the first one is queued on the game thread.
-        ShowWindow(g_panel,SW_HIDE);return;
-    }
-    if(reserve&&!g_geometry.blocked()) {
-        if(g_geometry.apply(game,current.outer,planned.game,now)) {
-            traceLayout("reserve",planned.game);ShowWindow(g_panel,SW_HIDE);return;
+    if(!g_collapsed&&!g_initialFit.used()) {
+        if(g_initialFit.apply(game,current.outer,planned.game,now)) {
+            traceLayout("initial-fit",planned.game);ShowWindow(g_panel,SW_HIDE);return;
         }
-    } else if(!g_collapsed&&g_geometry.active()) {
-        g_geometry.restore(game,current,now);
-        if(g_geometry.pending()){ShowWindow(g_panel,SW_HIDE);return;}
-    }
-    if(g_geometry.blocked()) {
-        input.original=current.outer;input.autoFit=false;
-        planned=whm::layout::plan(input);
     }
     auto panel=planned.panel;
+    if(g_collapsed)panel=whm::layout::foldedButton(current.outer,current.borders);
+    LONG extended=GetWindowLongW(g_panel,GWL_EXSTYLE);
     if(g_collapsed) {
-        const int size=std::clamp(panel.w*28/(g_vertical?400:1000),18,42);
-        panel={panel.x+panel.w-size,panel.y,size,size};
-        panel=whm::layout::clampPosition(panel,input.area);
-    }
+        if(!(extended&WS_EX_LAYERED))SetWindowLongW(g_panel,GWL_EXSTYLE,extended|WS_EX_LAYERED);
+        SetLayeredWindowAttributes(g_panel,0,175,LWA_ALPHA);
+    } else if(extended&WS_EX_LAYERED)SetWindowLongW(g_panel,GWL_EXSTYLE,extended&~WS_EX_LAYERED);
     // Follow the owner's topmost status only while the game is foreground;
     // WindowResizer's separate black-bars window is topmost in fullscreen.
     HWND z=(GetWindowLongW(game,GWL_EXSTYLE)&WS_EX_TOPMOST)?HWND_TOPMOST:HWND_NOTOPMOST;
@@ -937,12 +944,10 @@ void loadSettings() {
     g_collapsed.store(GetPrivateProfileIntW(L"HUD", L"Collapsed", 0, ini.c_str()) != 0);
     g_hidden.store(GetPrivateProfileIntW(L"HUD",L"Hidden",0,ini.c_str())!=0);
     g_vertical.store(GetPrivateProfileIntW(L"HUD",L"Vertical",0,ini.c_str())!=0);
-    g_dock=static_cast<whm::layout::Dock>(std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"Dock",0,ini.c_str()),0,3));
-    if(g_dock!=whm::layout::Dock::Free)g_vertical.store(g_dock!=whm::layout::Dock::Bottom);
+    g_dock=static_cast<whm::layout::Dock>(std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"Dock",0,ini.c_str()),0,2));
+    g_vertical.store(g_dock!=whm::layout::Dock::Bottom);
     g_autoFit=GetPrivateProfileIntW(L"HUD",L"AutoFit",1,ini.c_str())!=0;
     g_sideWidth=std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"SideWidth",240,ini.c_str()),120,600);
-    g_freeX=static_cast<int>(GetPrivateProfileIntW(L"HUD",L"FreeX",0,ini.c_str()));
-    g_freeY=static_cast<int>(GetPrivateProfileIntW(L"HUD",L"FreeY",0,ini.c_str()));
     g_hotkeyModifiers=GetPrivateProfileIntW(L"Hotkeys",L"Modifiers",6,ini.c_str());
     g_toggleKey=GetPrivateProfileIntW(L"Hotkeys",L"Toggle",'H',ini.c_str());
     g_layoutKey=GetPrivateProfileIntW(L"Hotkeys",L"Layout",'O',ini.c_str());

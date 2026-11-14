@@ -19,14 +19,14 @@
 
 static_assert(L"中文"[0] == 0x4E2D, "Compile HUD source as UTF-8 (/utf-8).");
 
-// Logical drawing space. The panel window keeps a 1000:290 aspect ratio, so
-// x and y scales are identical and the collapsed "+" stays square.
+// Horizontal drawing space. Portrait uses a separate responsive 400-unit
+// layout; its height follows the game. The folded button is always square.
 inline constexpr int kPanelVirtualWidth = 1000;
 inline constexpr int kPanelVirtualHeight = 290;
 inline constexpr int kPlusLogicalSize = 34;
 struct HudButton { int x, y, w, h; };
 // 2x2 control pad to the right of the "current hand" caption:
-// CN / JP / EN / collapse.
+// Language cycle / alternate dock 1 / alternate dock 2 / collapse.
 // Bottom-right corner of the hand strip, clear of all five SC cards.
 inline constexpr HudButton kHudButtons[4] = {
     {910, 204, 28, 28}, {944, 204, 28, 28},
@@ -56,6 +56,7 @@ struct PanelView {
     whm::HudLanguage language = whm::HudLanguage::Chinese;
     bool collapsed = false;
     bool vertical = false;
+    whm::layout::Dock dock=whm::layout::Dock::Bottom;
     int cursorX = -1, cursorY = -1;
     bool systemCursorVisible = true;
     std::vector<PanelEffect> effects;
@@ -167,8 +168,8 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
     RECT bounds{};
     GetClientRect(window, &bounds);
     const int actualWidth = bounds.right - bounds.left, actualHeight = bounds.bottom - bounds.top;
-    const int width=v.vertical?kPanelVirtualWidth:actualWidth;
-    const int height=v.vertical?kPanelVirtualHeight:actualHeight;
+    const int width=actualWidth;
+    const int height=actualHeight;
     if (actualWidth <= 0 || actualHeight <= 0) { EndPaint(window, &ps); return; }
     if (v.collapsed) {
         paintFoldedPanel(window, target, actualWidth, actualHeight);
@@ -185,7 +186,7 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
     }
     HGDIOBJ previous = SelectObject(dc, buffer);
     SetMapMode(dc, MM_ANISOTROPIC);
-    SetWindowExtEx(dc, kPanelVirtualWidth, kPanelVirtualHeight, nullptr);
+    SetWindowExtEx(dc,v.vertical?400:kPanelVirtualWidth,v.vertical?whm::layout::portraitHeight(actualWidth,actualHeight):kPanelVirtualHeight,nullptr);
     SetViewportExtEx(dc, width, height, nullptr);
     SetBkMode(dc, TRANSPARENT);
 
@@ -357,6 +358,126 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
     auto localized = [&](whm::HudTextKey key) {
         return panelWide(whm::hudText(key, lang));
     };
+    auto controls = [&](bool portrait) {
+        const auto others=whm::layout::alternateDocks(v.dock);
+        for(int i=0;i<4;++i) {
+            const auto pr=whm::layout::portraitButtons[i];
+            const HudButton b=portrait?HudButton{pr.x,pr.y,pr.w,pr.h}:kHudButtons[i];
+            rounded(b.x,b.y,b.w,b.h,i==0?RGB(96,64,44):RGB(28,23,44),
+                i==0?gold:RGB(123,96,151),5);
+            if(i==0) {
+                const wchar_t *codes[]={L"CN",L"JP",L"EN"};
+                write(codes[static_cast<int>(lang)],b.x,b.y,b.w,b.h,12,bright,DT_CENTER,L"Segoe UI");
+            } else {
+                const int cx=b.x+b.w/2,cy=b.y+b.h/2;
+                if(i==3) {
+                    POINT arrow[]{{cx-8,cy+5},{cx,cy-4},{cx+8,cy+5}};shape(arrow,3,bright);
+                    fill(cx-8,cy-9,16,3,bright);
+                } else {
+                    const auto dock=others[i-1];
+                    if(dock==whm::layout::Dock::Bottom) {
+                        POINT arrow[]{{cx-8,cy-5},{cx+8,cy-5},{cx,cy+5}};shape(arrow,3,cream);
+                        fill(cx-8,cy+8,16,3,gold);
+                    } else if(dock==whm::layout::Dock::Left) {
+                        POINT arrow[]{{cx+5,cy-8},{cx-5,cy},{cx+5,cy+8}};shape(arrow,3,cream);
+                        fill(cx-10,cy-8,3,16,gold);
+                    } else {
+                        POINT arrow[]{{cx-5,cy-8},{cx+5,cy},{cx-5,cy+8}};shape(arrow,3,cream);
+                        fill(cx+8,cy-8,3,16,gold);
+                    }
+                }
+            }
+        }
+    };
+    if(v.vertical) {
+        const int vh=whm::layout::portraitHeight(actualWidth,actualHeight);
+        for(int y=0;y<vh;++y)fill(0,y,400,1,RGB(19+y*8/vh,17+y*5/vh,33+y*14/vh));
+        rule(2,1,398,1,lavender,2);rule(2,vh-2,398,vh-2,lavender,2);
+        write(L"SokuMaxDamageHUD",12,10,293,28,20,bright);
+        // A compact top grip makes the drag affordance visible without a
+        // permanent empty header column beside the combat information.
+        for(int n=0;n<8;++n)disk(14+n*12,53,3,RGB(121,99,149));
+        controls(true);
+        const int rows=(static_cast<int>(v.effects.size())+1)/2;
+        const int extras=(v.firstHitActive?18:0)+(v.weatherVisible?20:0);
+        const int effectsH=std::clamp(std::max(vh*3/10,160+rows*48+extras),174,vh*2/5);
+        const bool twoHandRows=vh>=1000;
+        const int handH=twoHandRows?248:126;
+        const int cardH=(vh-84-effectsH-handH-32)/2;
+        auto portraitCard=[&](int y,const PanelCard &card,whm::HudTextKey title,
+                              whm::HudTextKey missing,bool focused) {
+            outlinedPanel(8,y,384,cardH,focused);
+            ribbon(22,y+3,356,localized(title),focused,lang==whm::HudLanguage::English?16:20);
+            const int ah=std::clamp(cardH-62,52,170),aw=ah*67/94;
+            const int iconW=std::min(104,aw);
+            const int iconH=iconW*94/67;
+            const auto display=panelCardLabel(card,lang,localized(missing));
+            const auto fallback=card.card<0&&!card.notation.empty()?panelWide(card.notation):localized(whm::HudTextKey::SpellType);
+            art(card.character,card.card,20,y+40+(cardH-60-iconH)/2,iconW,iconH,fallback);
+            const int tx=32+iconW,tw=378-tx;
+            write(display,tx,y+39,tw,32,19,cream);
+            const auto value=card.damage>0?(card.approximate?L"≈":L"")+std::to_wstring(card.damage):L"—";
+            const int numberSize=std::clamp(cardH/3,36,70);
+            number(value,tx,y+72,tw,cardH-91,numberSize);
+            write(localized(focused?whm::HudTextKey::Theoretical:whm::HudTextKey::MatchBest),
+                tx,y+cardH-19,tw,15,10,faded,DT_CENTER);
+        };
+        portraitCard(84,v.strongest,v.suikaGiantActive?whm::HudTextKey::StrongestNormal:whm::HudTextKey::Strongest,whm::HudTextKey::NoSkill,true);
+        portraitCard(92+cardH,v.record,whm::HudTextKey::Record,whm::HudTextKey::NoRecord,false);
+        const int ey=100+cardH*2;
+        outlinedPanel(8,ey,384,effectsH,false);
+        write(localized(whm::HudTextKey::PanelTitle),20,ey+5,360,26,19,cream);
+        const auto heat=whm::paletteForPercent(v.commonPercent);
+        number(panelPercent(v.commonPercent),22,ey+31,230,64,57,DT_LEFT,&heat);
+        const auto guts=v.gutsText.empty()?whm::gutsLabel(v.hpFactor):v.gutsText;
+        write(panelWide(guts),268,ey+57,106,25,18,quietGrey,DT_LEFT,L"Georgia");
+        int ty=ey+96;
+        if(v.firstHitActive) {
+            write(localized(whm::HudTextKey::FirstHit)+L" ×"+panelWide(panelFactor(v.firstHitMultiplier,2)),
+                22,ty,354,18,13,gold);ty+=18;
+        }
+        write(localized(whm::HudTextKey::SpecialType)+L": ×"+panelWide(panelFactor(v.skillMultiplier,2)),22,ty,180,22,15,cream);
+        write(localized(whm::HudTextKey::SpellType)+L": ×"+panelWide(panelFactor(v.spellMultiplier,2)),210,ty,170,22,15,cream);
+        rule(22,ty+26,376,ty+26,RGB(111,91,143));
+        const int top=ty+33,bottom=ey+effectsH-(v.weatherVisible?25:8);
+        const int pitch=rows?(bottom-top)/rows:30;
+        for(size_t n=0;n<v.effects.size();++n) {
+            const auto &effect=v.effects[n];const int x=22+(n%2)*190,y=top+static_cast<int>(n/2)*pitch;
+            const int ch=std::clamp(pitch-8,10,72),cw=std::max(8,ch*41/65);
+            const auto label=panelWide(whm::localizeEffectLabel(effect.label.c_str(),lang));
+            stacked(effect.character,effect.card,x,y+(pitch-ch)/2,effect.copies,cw,ch,4,label.empty()?L"?":label.substr(0,1));
+            const auto caption=label+(effect.copies>1?L" ×"+std::to_wstring(effect.copies):L"");
+            const auto val=panelWide(whm::localizeEffectValue(effect.value,lang));
+            if(pitch>=34) {
+                const int tx=x+std::max(48,cw+16);
+                write(caption,tx,y+pitch/2-22,174-(tx-x),22,12,cream);
+                write(val,tx,y+pitch/2,174-(tx-x),24,18,bright);
+            } else {
+                write(caption,x+40,y,80,pitch,10,cream);write(val,x+120,y,52,pitch,11,bright);
+            }
+        }
+        if(v.effects.empty())write(localized(whm::HudTextKey::NoEffects),22,top,354,26,15,faded,DT_CENTER);
+        if(v.weatherVisible)write(localized(whm::HudTextKey::Weather)+L" "+panelWide(whm::weatherName(v.weather,lang)),22,ey+effectsH-23,354,18,13,lavender);
+        const int hy=ey+effectsH+8;
+        outlinedPanel(8,hy,384,handH,false);
+        write(localized(whm::HudTextKey::Hand),20,hy+4,160,27,19,cream);
+        write(localized(whm::HudTextKey::SpellMax),182,hy+4,196,27,14,lavender,DT_RIGHT);
+        for(size_t n=0;n<std::min<size_t>(5,v.hand.size());++n) {
+            const auto &card=v.hand[n];
+            const int x=twoHandRows?(n<3?32+static_cast<int>(n)*124:94+static_cast<int>(n-3)*124):30+static_cast<int>(n)*74;
+            const int cy=hy+36+(twoHandRows?static_cast<int>(n/3)*106:0);
+            art(card.character,card.card,x+(twoHandRows?22:11),cy,twoHandRows?50:36,twoHandRows?70:51,localized(whm::HudTextKey::SpellType));
+            const auto value=card.damage>0?(card.approximate?L"≈":L"")+std::to_wstring(card.damage):L"—";
+            write(value,x-4,cy+(twoHandRows?77:57),twoHandRows?102:72,24,twoHandRows?21:18,bright,DT_CENTER,L"Georgia",true);
+        }
+        if(v.hand.empty())write(localized(whm::HudTextKey::NoHand),22,hy+39,354,65,18,faded,DT_CENTER);
+        if(!v.systemCursorVisible&&v.cursorX>=0&&v.cursorY>=0) {
+            POINT arrow[]{{v.cursorX,v.cursorY},{v.cursorX,v.cursorY+19},{v.cursorX+5,v.cursorY+14},{v.cursorX+12,v.cursorY+13}};
+            shape(arrow,4,cream);
+        }
+        SetMapMode(dc,MM_TEXT);BitBlt(target,0,0,actualWidth,actualHeight,dc,0,0,SRCCOPY);
+        SelectObject(dc,previous);DeleteObject(buffer);DeleteDC(dc);EndPaint(window,&ps);return;
+    }
     // Base gradient plus a low-contrast hand-drawn night shrine background:
     // this is procedural GDI art, with an optional user-supplied panel-bg.png.
     for(int y=0; y<kPanelVirtualHeight; ++y) {
@@ -532,16 +653,7 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
     }
     rule(900,203,900,267,RGB(110,90,139));
     rounded(904,198,72,72,RGB(24,19,38),RGB(103,78,130),8);
-    auto button = [&](const HudButton &b,const wchar_t *caption,bool active) {
-        rounded(b.x,b.y,b.w,b.h,active?RGB(96,64,44):RGB(28,23,44),
-                active?gold:RGB(103,78,130),5);
-        write(caption,b.x,b.y,b.w,b.h,11,active?bright:cream,DT_CENTER,L"Segoe UI");
-    };
-    const int selected=static_cast<int>(lang);
-    button(kHudButtons[0],L"CN",selected==0);
-    button(kHudButtons[1],L"JP",selected==1);
-    button(kHudButtons[2],L"EN",selected==2);
-    button(kHudButtons[3],L"↑",false);
+    controls(false);
     // Fallback arrow for sessions where the game keeps the system cursor
     // hidden. It is only drawn when the real cursor is not showing.
     if(!v.vertical&&!v.systemCursorVisible&&v.cursorX>=0&&v.cursorY>=0) {
@@ -559,40 +671,7 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
         arrow(0,0,RGB(255,246,225));
     }
     SetMapMode(dc,MM_TEXT);
-    if(v.vertical) {
-        HDC portrait=CreateCompatibleDC(target);
-        HBITMAP image=CreateCompatibleBitmap(target,whm::layout::verticalWidth,whm::layout::verticalHeight);
-        if(portrait&&image) {
-            auto oldImage=SelectObject(portrait,image);
-            RECT full{0,0,whm::layout::verticalWidth,whm::layout::verticalHeight};
-            HBRUSH bg=CreateSolidBrush(RGB(21,18,36));FillRect(portrait,&full,bg);DeleteObject(bg);
-            for(auto tile:whm::layout::verticalTiles)
-                BitBlt(portrait,tile.x,tile.y,tile.source.w,tile.source.h,dc,tile.source.x,tile.source.y,SRCCOPY);
-            HPEN border=CreatePen(PS_SOLID,2,RGB(103,78,130));
-            auto oldPen=SelectObject(portrait,border);auto oldBrush=SelectObject(portrait,GetStockObject(NULL_BRUSH));
-            RoundRect(portrait,216,106,396,386,8,8);RoundRect(portrait,1,1,399,775,10,10);
-            SelectObject(portrait,oldBrush);SelectObject(portrait,oldPen);DeleteObject(border);
-            HFONT font=CreateFontW(-13,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,whm::uiFontFamily(lang));
-            auto oldFont=SelectObject(portrait,font);SetBkMode(portrait,TRANSPARENT);SetTextColor(portrait,cream);
-            RECT title{12,2,390,25};DrawTextW(portrait,L"⋮⋮  SokuMaxDamageHUD",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-            for(size_t n=0;n<std::min<size_t>(5,v.hand.size());++n) {
-                auto tile=whm::layout::handTile(static_cast<int>(n));
-                BitBlt(portrait,tile.x,tile.y,tile.source.w,tile.source.h,dc,tile.source.x,tile.source.y,SRCCOPY);
-            }
-            if(v.hand.empty()) {RECT empty{224,172,388,246};DrawTextW(portrait,localized(whm::HudTextKey::NoHand).c_str(),-1,&empty,DT_CENTER|DT_WORDBREAK);}
-            SelectObject(portrait,oldFont);DeleteObject(font);
-            if(!v.systemCursorVisible&&v.cursorX>=0&&v.cursorY>=0) {
-                POINT arrow[]{{v.cursorX,v.cursorY},{v.cursorX,v.cursorY+19},{v.cursorX+5,v.cursorY+14},{v.cursorX+12,v.cursorY+13}};
-                auto brush=CreateSolidBrush(RGB(255,246,225));auto old=SelectObject(portrait,brush);
-                Polygon(portrait,arrow,4);SelectObject(portrait,old);DeleteObject(brush);
-            }
-            SetStretchBltMode(target,HALFTONE);
-            StretchBlt(target,0,0,actualWidth,actualHeight,portrait,0,0,400,776,SRCCOPY);
-            SelectObject(portrait,oldImage);
-        }
-        if(image)DeleteObject(image);if(portrait)DeleteDC(portrait);
-    } else BitBlt(target,0,0,width,height,dc,0,0,SRCCOPY);
+    BitBlt(target,0,0,width,height,dc,0,0,SRCCOPY);
     SelectObject(dc,previous);
     DeleteObject(buffer);
     DeleteDC(dc);

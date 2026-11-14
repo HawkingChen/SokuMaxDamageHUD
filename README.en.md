@@ -47,9 +47,9 @@ To update, back up the old folder, close the game, and replace the files with th
 - **Strongest special**: the highest estimated damage among known available special moves. Equal-damage B/C variants may share a caption such as `623B/C`.
 - **Best hit**: the highest recorded single-move damage this match, including normals and spells.
 - **Current hand**: estimated spell damage in hand order.
-- **CN / JP / EN** changes language. **↑** collapses the panel; **＋** expands it. Preferences are saved automatically.
+- The **CN / JP / EN** button cycles languages. Two direction buttons switch to the other dock positions; the bold up button collapses the panel. A translucent **＋** inside the game’s bottom-right corner expands it. Preferences are saved automatically.
 
-**Window layouts (0.5.0 onward):** the default bottom panel automatically shrinks the game if needed, keeping its client area at 4:3. Collapsing/hiding the HUD or leaving battle restores the original size. The HUD hides when another application has focus.
+**Window layouts (0.5.1 onward):** dock below, left or right. Portrait panels match the game window’s height; the bottom panel sits flush against it. Only the first expanded layout per launch may adjust the game client area, keeping 4:3. Hiding, collapsing, docking and leaving battle never change game size afterward. The HUD follows manual game-window changes.
 
 | Action | Default shortcut |
 | --- | --- |
@@ -57,9 +57,9 @@ To update, back up the old folder, close the game, and replace the files with th
 | Switch horizontal / vertical | Ctrl + Shift + O |
 | Cycle bottom / left / right | Ctrl + Shift + P |
 
-Shortcuts work during battle while the game has focus. Drag a non-button area to move the panel. Release near the game's left, right or bottom edge to dock; elsewhere it floats freely without shrinking the game. Select a dock again to resume automatic layout.
+Shortcuts work during battle while the game has focus. Drag a non-button area to move a translucent static preview; damage recording continues. Releasing docks to the nearest bottom/left/right edge; free floating is unavailable. The HUD hides when leaving battle or switching applications.
 
-Supports ordinary windows and **WindowResizer borderless fullscreen**. A vertical panel can use the side margins on wide screens; a horizontal panel shrinks the game to leave room below. Exclusive fullscreen is unsupported. Set `[HUD] AutoFit=0` in `SokuMaxDamageHUD.ini` to disable automatic game resizing, adjust `SideWidth` for portrait width, or edit `[Hotkeys]` to change shortcuts.
+Supports ordinary windows and **WindowResizer borderless fullscreen**, not exclusive fullscreen. If a chosen edge lacks room, the HUD reduces its own size or overlays that game edge when no usable outside space remains; it does not force another game resize. Set `[HUD] AutoFit=0` in `SokuMaxDamageHUD.ini` to disable the first adjustment, `SideWidth` for portrait width, or `[Hotkeys]` to change shortcuts.
 
 ## Limitations
 

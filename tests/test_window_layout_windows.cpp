@@ -30,26 +30,35 @@ int main() {
  assert(original.outer.w>640&&original.outer.h>480);
  inspectSizes=true;
  for(int cycle=0;cycle<16;++cycle) {
-  window::Geometry geometry;auto s=window::snapshot(h);geometry.synchronize(s,GetTickCount());
+  window::InitialFit geometry;auto s=window::snapshot(h);
   layout::Input input;input.original=s.outer;input.borders=s.borders;
   input.area={0,0,800,520};input.dock=cycle%2?layout::Dock::Right:layout::Dock::Bottom;input.vertical=cycle%2;
   const auto planned=layout::plan(input);assert(planned.game.w<s.outer.w||planned.game.h<s.outer.h);
   assert(geometry.apply(h,s.outer,planned.game,GetTickCount()));
   start=GetTickCount();
-  do {Sleep(1);s=window::snapshot(h);geometry.synchronize(s,GetTickCount());}
+  do {Sleep(1);s=window::snapshot(h);geometry.poll(s,GetTickCount());}
   while(geometry.pending()&&GetTickCount()-start<2000);
   assert(!geometry.pending()&&!geometry.blocked());
   assert(layout::closeRect(s.outer,planned.game));
   for(int repeat=0;repeat<5;++repeat)assert(!geometry.apply(h,s.outer,planned.game,GetTickCount()));
+  assert(geometry.used());
+  // Manual resize/fullscreen transitions are external actions. The HUD's
+  // one-shot gate must not attempt to fit again after any such action.
+  assert(SetWindowPos(h,nullptr,original.outer.x,original.outer.y,original.outer.w,original.outer.h,
+      SWP_NOACTIVATE|SWP_NOZORDER|SWP_ASYNCWINDOWPOS));
   start=GetTickCount();
-  do {geometry.restore(h,window::snapshot(h),GetTickCount());Sleep(1);}
-  while(geometry.active()&&GetTickCount()-start<2000);
-  assert(!geometry.active());
-  auto restored=window::snapshot(h).outer;
-  if(!layout::closeRect(restored,original.outer))std::cerr<<"cycle "<<cycle<<" original "<<original.outer.x<<","<<original.outer.y<<","<<original.outer.w<<","<<original.outer.h<<" restored "<<restored.x<<","<<restored.y<<","<<restored.w<<","<<restored.h<<" area "<<s.area.x<<","<<s.area.y<<","<<s.area.w<<","<<s.area.h<<"\n";
-  assert(layout::closeRect(restored,original.outer));
+  while(!layout::closeRect(window::snapshot(h).outer,original.outer)&&GetTickCount()-start<2000)Sleep(1);
+  assert(layout::closeRect(window::snapshot(h).outer,original.outer));
+  for(auto dock:{layout::Dock::Bottom,layout::Dock::Left,layout::Dock::Right}) {
+      input.original=original.outer;input.autoFit=false;input.dock=dock;input.vertical=dock!=layout::Dock::Bottom;
+      assert(layout::plan(input).game==original.outer);
+      assert(!geometry.apply(h,original.outer,planned.game,GetTickCount()));
+  }
+  geometry.poll(window::snapshot(h),GetTickCount());
+  assert(!geometry.apply(h,original.outer,planned.game,GetTickCount()));
+  assert(layout::closeRect(window::snapshot(h).outer,original.outer));
  }
  assert(observedSizes>=16&&badRatios==0);
  inspectSizes=false;PostMessageW(h,WM_CLOSE,0,0);assert(WaitForSingleObject(thread,2000)==WAIT_OBJECT_0);CloseHandle(thread);
- std::cout<<"Cross-thread async resize, 4:3 clients and 16 restore cycles passed\n";
+ std::cout<<"Cross-thread initial fit, 4:3 clients, follow-only docks and one-shot resize gate passed\n";
 }

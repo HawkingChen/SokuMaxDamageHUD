@@ -6,8 +6,8 @@
 namespace whm::layout {
 struct Rect { int x=0,y=0,w=0,h=0; bool operator==(const Rect&)const=default; };
 struct Insets { int left=0,top=0,right=0,bottom=0; };
-enum class Dock { Bottom=0, Left=1, Right=2, Free=3 };
-constexpr int verticalWidth=400,verticalHeight=776;
+enum class Dock { Bottom=0, Left=1, Right=2 };
+constexpr int verticalWidth=400,verticalHeight=1000;
 inline bool closeRect(Rect a,Rect b,int tolerance=1) {
  return std::abs(a.x-b.x)<=tolerance&&std::abs(a.y-b.y)<=tolerance&&
         std::abs(a.w-b.w)<=tolerance&&std::abs(a.h-b.h)<=tolerance;
@@ -19,7 +19,7 @@ inline Rect clampPosition(Rect r,Rect area) {
 struct Input {
  Rect original,area; Insets borders; Dock dock=Dock::Bottom;
  bool vertical=false,autoFit=true,fullscreen=false;
- int sideWidth=240,freeX=0,freeY=0;
+ int sideWidth=240;
 };
 struct Plan { Rect game,panel; };
 inline Plan plan(const Input &i) {
@@ -27,58 +27,86 @@ inline Plan plan(const Input &i) {
  const int baseW=std::max(4,i.original.w-bx),baseH=std::max(3,i.original.h-by);
  const bool side=i.dock==Dock::Left||i.dock==Dock::Right;
  const int sideW=std::clamp(i.sideWidth,80,std::max(80,i.area.w/2));
- const auto panelSize=[&](int gameW) {
-  int w=i.vertical?sideW:gameW;
-  int h=i.vertical?(w*verticalHeight+verticalWidth/2)/verticalWidth:(w*290+500)/1000;
-  if(h>i.area.h) {w=std::max(1,w*i.area.h/h);h=i.area.h;}
+ const auto panelSize=[&](int gameW,int gameH) {
+  int w=side?sideW:gameW;
+  int h=side?gameH:(w*290+500)/1000;
+  if(!side&&h>i.area.h) {w=std::max(1,w*i.area.h/h);h=i.area.h;}
   return Rect{0,0,w,h};
  };
  Plan out{i.original,{}};
- const bool fit=i.autoFit&&i.dock!=Dock::Free;
+ const bool fit=i.autoFit;
  if(fit) {
   int lo=1,hi=std::max(1,std::min(baseW/4,baseH/3)),best=1;
   while(lo<=hi) {
-   int u=lo+(hi-lo)/2,w=u*4+bx,h=u*3+by;const auto panel=panelSize(w);
-   const bool fits=side?(w+4+panel.w<=i.area.w&&h<=i.area.h):
-                       (w<=i.area.w&&h+4+panel.h<=i.area.h);
+   int u=lo+(hi-lo)/2,w=u*4+bx,h=u*3+by;const auto panel=panelSize(w,h);
+   const bool fits=side?(w+panel.w<=i.area.w&&h<=i.area.h):
+                       (w<=i.area.w&&h+panel.h<=i.area.h);
    if(fits){best=u;lo=u+1;}else hi=u-1;
   }
   out.game.w=best*4+bx;out.game.h=best*3+by;
  }
- out.panel=panelSize(out.game.w);
+ out.panel=panelSize(out.game.w,out.game.h);
  if(fit) {
   Rect allowed=i.area;
-  if(i.dock==Dock::Bottom)allowed.h=std::max(1,allowed.h-out.panel.h-4);
-  if(i.dock==Dock::Left){allowed.x+=out.panel.w+4;allowed.w-=out.panel.w+4;}
-  if(i.dock==Dock::Right)allowed.w-=out.panel.w+4;
+  if(i.dock==Dock::Bottom)allowed.h=std::max(1,allowed.h-out.panel.h);
+  if(i.dock==Dock::Left){allowed.x+=out.panel.w;allowed.w-=out.panel.w;}
+  if(i.dock==Dock::Right)allowed.w-=out.panel.w;
   out.game=clampPosition(out.game,allowed);
   if(i.fullscreen&&i.dock==Dock::Bottom) {
    out.game.x=i.area.x+(i.area.w-out.game.w)/2;
-   out.game.y=i.area.y+(i.area.h-out.game.h-out.panel.h-4)/2;
+   out.game.y=i.area.y+(i.area.h-out.game.h-out.panel.h)/2;
   }
  }
- out.panel.x=out.game.x;out.panel.y=out.game.y+out.game.h+4;
+ out.panel.x=out.game.x;out.panel.y=out.game.y+out.game.h;
  if(side) {
-  out.panel.x=i.dock==Dock::Left?out.game.x-out.panel.w-4:out.game.x+out.game.w+4;
-  out.panel.y=out.game.y+(out.game.h-out.panel.h)/2;
+  out.panel.x=i.dock==Dock::Left?out.game.x-out.panel.w:out.game.x+out.game.w;
+  out.panel.y=out.game.y;
  }
- if(i.dock==Dock::Free) {out.panel.x=out.game.x+i.freeX;out.panel.y=out.game.y+i.freeY;}
- out.panel=clampPosition(out.panel,i.area);
+
+ if(!fit) {
+  // Follow a fixed game window. Use the remaining margin, or overlay the
+  // selected edge if there is no usable margin. Never move/resize the game.
+  if(side) {
+   const int margin=i.dock==Dock::Left?out.game.x-i.area.x:
+       i.area.x+i.area.w-out.game.x-out.game.w;
+   if(margin>=100)out.panel.w=std::min(out.panel.w,margin);
+   out.panel.x=i.dock==Dock::Left?out.game.x-out.panel.w:out.game.x+out.game.w;
+   if(margin<100)out.panel.x=i.dock==Dock::Left?out.game.x:out.game.x+out.game.w-out.panel.w;
+  } else {
+   const int margin=i.area.y+i.area.h-out.game.y-out.game.h;
+   if(margin>=60)out.panel.h=std::min(out.panel.h,margin);
+   else out.panel.y=out.game.y+out.game.h-out.panel.h;
+  }
+ }
+ if(!side)out.panel=clampPosition(out.panel,i.area);
  return out;
 }
-struct Tile { Rect source; int x,y; };
-inline constexpr std::array<Tile,6> verticalTiles{{
- {{10,10,208,276},4,28},{{904,198,72,72},310,30},
- {{235,199,115,25},222,109},{{235,229,115,25},222,134},
- {{220,1,380,184},10,394},{{604,1,380,184},10,580}}};
-inline Tile handTile(int n) {return {{358+n*100,204,84,73},220+(n%2)*88,164+(n/2)*74};}
 inline bool inside(int x,int y,Rect r){return x>=r.x&&y>=r.y&&x<r.x+r.w&&y<r.y+r.h;}
+inline constexpr std::array<Rect,4> portraitButtons{{{314,10,28,28},{350,10,28,28},{314,46,28,28},{350,46,28,28}}};
+inline int portraitHeight(int width,int height){return std::max(840,height*400/std::max(1,width));}
 inline std::pair<int,int> canonicalPoint(bool vertical,int x,int y) {
  if(!vertical)return {x,y};
- for(auto t:verticalTiles)if(inside(x,y,{t.x,t.y,t.source.w,t.source.h}))
-  return {t.source.x+x-t.x,t.source.y+y-t.y};
- for(int n=0;n<5;++n){auto t=handTile(n);if(inside(x,y,{t.x,t.y,t.source.w,t.source.h}))return {t.source.x+x-t.x,t.source.y+y-t.y};}
+ for(int n=0;n<4;++n)if(inside(x,y,portraitButtons[n]))
+  return {910+(n%2)*34+x-portraitButtons[n].x,204+(n/2)*34+y-portraitButtons[n].y};
  return {-1,-1};
+}
+inline std::array<Dock,2> alternateDocks(Dock dock) {
+ if(dock==Dock::Left)return {Dock::Bottom,Dock::Right};
+ if(dock==Dock::Right)return {Dock::Bottom,Dock::Left};
+ return {Dock::Left,Dock::Right};
+}
+inline Dock nearestDock(Rect game,int x,int y) {
+ const long long dy=y-std::clamp(y,game.y,game.y+game.h);
+ const long long dx=x-std::clamp(x,game.x,game.x+game.w);
+ const auto square=[](long long n){return n*n;};
+ const auto left=square(x-game.x)+square(dy),right=square(x-game.x-game.w)+square(dy);
+ const auto bottom=square(y-game.y-game.h)+square(dx);
+ if(bottom<=left&&bottom<=right)return Dock::Bottom;
+ return left<right?Dock::Left:Dock::Right;
+}
+inline Rect foldedButton(Rect game,Insets border) {
+ const int size=std::clamp((game.w-border.left-border.right)/24,24,38);
+ return {game.x+game.w-border.right-size-8,game.y+game.h-border.bottom-size-8,size,size};
 }
 // One outstanding async request, with bounded waiting. Caller keeps the
 // original snapshot; it never scales an already-scaled window again.
