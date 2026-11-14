@@ -49,6 +49,7 @@ struct PanelView {
     double firstHitMultiplier = 1.;
     bool firstHitActive = false;
     bool forcedFirstHitArmed = false;
+    bool suikaGiantActive = false;
     bool weatherVisible = false;
     bool weatherSealed = false;
     whm::HudLanguage language = whm::HudLanguage::Chinese;
@@ -501,7 +502,8 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
         write(localized(focused?whm::HudTextKey::Theoretical:whm::HudTextKey::MatchBest),
               x+109,151,240,17,11,RGB(187,162,147),DT_CENTER);
     };
-    highlight(224,whm::HudTextKey::Strongest,v.strongest,
+    highlight(224,v.suikaGiantActive ? whm::HudTextKey::StrongestNormal
+                                     : whm::HudTextKey::Strongest,v.strongest,
               whm::HudTextKey::NoSkill,true);
     highlight(608,whm::HudTextKey::Record,v.record,
               whm::HudTextKey::NoRecord,false);
