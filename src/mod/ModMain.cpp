@@ -507,7 +507,8 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         for(const auto &m:g_staticMoves){
             if(m.character!=view.character||m.kind!="skill")continue;
             const int level=currentSkillLevel(m.card);
-            if(level<0)continue; // replaced or unavailable skill slot
+            if(level<0||!whm::skillCommandAvailableAtLevel(
+                view.character,m.card,m.notation,level))continue;
             int damage=amount(m,level);
             if(damage>view.strongest.damage){
                 bestNotation=whm::normalizeNotation(m.notation);bestName=m.name;
