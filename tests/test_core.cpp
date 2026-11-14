@@ -175,6 +175,57 @@ static void testSuikaDelayed5CWithJ6A() {
     assert(two.mixed&&!two.origin.valid());
 }
 
+static void testDelayedBirthAndDormantProjectileSafety() {
+    using namespace whm;
+    ActorContact idle,shoot,jump;
+    shoot.action=410;shoot.sequence=1;shoot.animationFrame=10;
+    jump.action=307;jump.sequence=1;jump.animationFrame=5;
+    jump.hitBoxes=true;jump.collision=1;jump.limit=2;
+    ProjectileContact dormant{4001,0,10,0,0,0,false,true};
+
+    // 5C's projectile remains present in the game but its damage box is
+    // dormant until explosion. No contact flag changes on the projectile in
+    // the exact frame j6A hits. The previous code silently ranked all
+    // observed damage as the j6A alone; a *latent* 5C source must veto that.
+    HitAttribution persistent;
+    const auto cast=persistent.observe(shoot,shoot,{}, {dormant});
+    assert(cast.valid()&&cast.action==410);
+    persistent.observe(shoot,idle,{dormant},{dormant});
+    const auto mixed=persistent.observeDetailed(idle,jump,{dormant},{dormant});
+    assert(mixed.mixed&&!mixed.origin.valid());
+    assert(mixed.liveProjectiles==1&&mixed.unownedOrigins==0);
+    RecordTracker record;
+    record.observeDamage(2280,cast.action,10,cast.instance);
+    record.observeDamage(3057,mixed.origin.action,20,mixed.origin.instance,mixed.mixed);
+    assert(record.best().actionId==410&&record.best().damage==2280);
+
+    // An unparented object that APPEARS after the owner is already in j6A
+    // must not inherit j6A as the object's casting action. This also covers
+    // delayed 5C's effect spawn after its player has changed animation.
+    HitAttribution late;
+    ProjectileContact firstLate{4002,0,11,0,0,0,false,true};
+    auto uncertain=late.observeDetailed(jump,jump,{}, {firstLate});
+    assert(uncertain.mixed&&!uncertain.origin.valid());
+    assert(uncertain.unownedOrigins==1);
+    auto lateHit=firstLate;
+    lateHit.collision=1;lateHit.limit=1;lateHit.hitBoxes=true;
+    uncertain=late.observeDetailed(jump,jump,{firstLate},{lateHit});
+    assert(uncertain.mixed&&!uncertain.origin.valid());
+
+    // Unknown parent pointer also must not be replaced with the currently
+    // executing normal (before this patch it was assigned to j6A).
+    HitAttribution unresolvedParent;
+    ProjectileContact child{4003,0xdeadbeef,12,0,0,0,false,true};
+    const auto ambiguous=unresolvedParent.observeDetailed(jump,jump,{}, {child});
+    assert(ambiguous.mixed&&!ambiguous.origin.valid());
+    assert(ambiguous.unownedOrigins==1);
+
+    // With no competing delayed projectile, standalone j6A is still tracked.
+    HitAttribution normal;
+    const auto justNormal=normal.observeDetailed(idle,jump,{},{});
+    assert(justNormal.origin.valid()&&justNormal.origin.action==307&&!justNormal.mixed);
+}
+
 static void testSpellFollowupAttribution() {
     using namespace whm;
     // SokuLib Action.hpp: every SC200..219 has an ALT_EFFECT in 650..669.
@@ -381,6 +432,7 @@ int main() {
     testHudRoundingModes();
     testProjectileRecords();
     testSuikaDelayed5CWithJ6A();
+    testDelayedBirthAndDormantProjectileSafety();
     testSpellFollowupAttribution();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
