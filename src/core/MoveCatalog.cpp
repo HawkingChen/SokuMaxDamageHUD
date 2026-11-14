@@ -64,11 +64,15 @@ bool MoveCatalog::read(std::istream &stream, std::vector<std::string> *errors) {
             if (segment.empty()) continue;
             const auto fields = split(segment, ':');
             Hit hit;
-            if (fields.size() != 4 || !parseInt(fields[0], hit.baseDamage) ||
+            if ((fields.size()!=4&&fields.size()!=5) || !parseInt(fields[0], hit.baseDamage) ||
                 !parseDouble(fields[1], hit.rateAfter) ||
                 !parseDouble(fields[2], hit.special) || !parseInt(fields[3], hit.limit) ||
                 hit.baseDamage < 0 || hit.limit < 0 || hit.limit > 100 || hit.rateAfter > 1.0)
                 good = false;
+            if(good && fields.size()==5) {
+                if(fields[4]=="1")hit.counterHitEligible=true;
+                else if(fields[4]!="0")good=false;
+            }
             if (good) move.hits.push_back(hit);
         }
         if (!good || move.hits.empty()) {

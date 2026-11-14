@@ -12,6 +12,8 @@
 #include "SuikaGiant.hpp"
 #include "PanelLayout.hpp"
 #include "HitAttribution.hpp"
+#include "SkillSelection.hpp"
+#include "OpeningCounter.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -76,6 +78,44 @@ static void testProjectileRecords() {
     RecordTracker unknown;
     unknown.observeDamage(500,-1,1,0);
     assert(unknown.best().damage==500&&!unknown.best().attributed);
+    // A 4-cost Utsuho sun keeps generating child bullets after the fighter
+    // becomes idle and even just after an emitter despawns. A child with an
+    // explicit parent must inherit the ORIGINAL SC606 cast, not a new action.
+    HitAttribution sun;
+    ActorContact sunCast;sunCast.action=606;sunCast.animationFrame=10;
+    ProjectileContact sunRoot{101,0,1,0,1,0,true,true};
+    const auto castSun=sun.observe(sunCast,sunCast,{}, {sunRoot});
+    assert(castSun.valid()&&castSun.action==606);
+    sun.observe(sunCast,idle,{sunRoot},{sunRoot});
+    sun.observe(idle,idle,{sunRoot},{}); // root despawns
+    ProjectileContact sunChild{102,101,1,0,1,0,true,true};
+    const auto childSpawn=sun.observe(idle,idle,{}, {sunChild});
+    assert(childSpawn==castSun); // parent tombstone, no actor action
+    auto hitSunChild=sunChild;hitSunChild.collision=1;hitSunChild.limit=0;
+    const auto childContact=sun.observe(idle,idle,{sunChild},{hitSunChild});
+    assert(childContact==castSun);
+    RecordTracker sustained;
+    sustained.observeDamage(600,castSun.action,10,castSun.instance);
+    sustained.observeDamage(500,childContact.action,90,childContact.instance);
+    sustained.observeDamage(700,childContact.action,160,childContact.instance);
+    sustained.observeDamage(900,childContact.action,230,childContact.instance);
+    assert(sustained.best().damage==2700); // post-untech, same cast
+    // Meiling Rainbow Taichi has the same cast-lifetime principle.
+    RecordTracker rainbow;
+    rainbow.observeDamage(400,608,10,5);
+    rainbow.observeDamage(600,608,90,5);
+    rainbow.observeDamage(700,608,170,5);
+    assert(rainbow.best().damage==1700&&rainbow.best().actionId==608);
+    rainbow.observeDamage(900,608,190,6); // second cast: not merged
+    assert(rainbow.best().damage==1700);
+    // Tombstones are deliberately short-lived: an unrelated projectile
+    // appearing much later must NOT steal a previous 4-card spell identity.
+    HitAttribution expired;
+    auto priorCast=expired.observe(sunCast,sunCast,{}, {sunRoot});
+    assert(priorCast.valid());
+    expired.observe(sunCast,idle,{sunRoot},{});
+    for(int i=0;i<95;++i)expired.observe(idle,idle,{},{});
+    assert(!expired.observe(idle,idle,{}, {sunChild}).valid());
 }
 
 static void testHudRoundingModes() {
@@ -182,6 +222,38 @@ int main() {
 
     // Regression: networking roles are the OPPOSITE of the old implementation.
     // SokuMods DiscordIntegration uses VSCLIENT (4) as local left and
+    // Skills can be learned but replaced on the same command slot; the
+    // legacy skillMap.notUsed bit and effective level both matter.
+    static_assert(skillIndex(17,105)==5);
+    static_assert(skillIndex(4,114)==14);
+    static_assert(skillIndex(0,112)==-1);
+    assert(activeSkillLevel(17,105,false,2,4)==4); // effective lv (疎雨)
+    assert(activeSkillLevel(17,105,true,2,2)==-1); // replaced
+    assert(activeSkillLevel(17,105,false,-1,2)==-1);
+    assert(skillActionForNotation(17,101,"623B")==520);
+    assert(skillActionForNotation(17,101,"623C")==521);
+    assert(skillActionForNotation(17,101,"j.623B")==522);
+    assert(skillActionForNotation(4,109,"421B")==585);
+    assert(skillActionForNotation(17,101,"623A")==-1);
+    assert(!skillCommandAvailableAtLevel(17,108,"j.214B",0));
+    assert(!skillCommandAvailableAtLevel(17,108,"j.214C",1));
+    assert(skillCommandAvailableAtLevel(17,108,"j.214B",2));
+    assert(skillCommandAvailableAtLevel(17,108,"214B",0));
+    // With CH eligibility explicitly sourced, Yellow Sand changes only
+    // the first hit, not the rest of a multi-hit move (or unknown shots).
+    OpeningCounterCatalog open;
+    std::istringstream chData(
+        "17|105|623B|-1|1430|https://example.org/meiling\n"
+        "4|109|421B|-1|1320|https://example.org/emerald\n");
+    assert(open.read(chData)&&open.size()==2);
+    assert(open.firstHit(17,105,"623B",4)==1430);
+    assert(open.firstHit(4,109,"421B",0)==1320);
+    assert(open.firstHit(4,109,"421C",0)==0);
+    assert(addOpeningCounterHit(1430,1430,1.,true,true)==1906);
+    assert(addOpeningCounterHit(2000,300,1.,true,true)==2100);
+    assert(addOpeningCounterHit(2000,300,1.,false,true)==2000);
+    assert(addOpeningCounterHit(2000,300,1.,true,false)==2000);
+    assert(addOpeningCounterHit(2000,0,1.,true,true)==2000);
     // VSSERVER (5) as local right. A wrong side leaks opponent's hand/skills.
     static_assert(localPlayerSide(4, 1) == 0); // client -> own P1/left
     static_assert(localPlayerSide(5, 1) == 1); // server -> own P2/right
@@ -221,6 +293,27 @@ int main() {
     standard.activeWeather = 4;
     assert(estimate(singleSpell, standard, victim).damage == 1000);
     assert(estimate(singleSkill, standard, victim).damage == 1250);
+    // Runtime effective type multipliers already include Hail/Drizzle.
+    // They must NOT be multiplied by 1.25 again by the step engine.
+    standard.typeIncludesWeather=true;
+    standard.skillMultiplier=1.25;
+    assert(estimate(singleSkill, standard, victim).damage == 1250);
+    standard.activeWeather=1;standard.spellMultiplier=1.25;
+    assert(estimate(singleSpell, standard, victim).damage == 1250);
+    standard.activeWeather=4;standard.skillMultiplier=1.25;
+    // CH is a separately verified bit on the first hit, not every hit.
+    Move chMove{0,MoveKind::Skill,500,2,"sourced",{
+        {900,1.,1.,0,true}, {600,1.,1.,0,true}},true};
+    Fighter normal{};normal.hp=10000;
+    const int noCH=estimate(chMove,normal,normal).damage;
+    const int yesCH=estimate(chMove,normal,normal,{4./3.}).damage;
+    assert(yesCH>noCH&&yesCH-noCH>=290&&yesCH-noCH<=305);
+    chMove.hits[0].counterHitEligible=false;
+    assert(estimate(chMove,normal,normal,{4./3.}).damage==noCH);
+    chMove.hits[0].counterHitEligible=true;
+    // Different current HP changes second-hit guts in the verified engine.
+    Fighter lowHP=normal;lowHP.hp=1000;
+    assert(estimate(chMove,normal,lowHP,{4./3.}).damage<yesCH);
     // An incomplete profile must never be silently tagged complete.
     singleSpell.verifiedFullHit = false;
     assert(!estimate(singleSpell, standard, victim).complete);
@@ -232,6 +325,18 @@ int main() {
     assert(db.find(0, MoveKind::Normal, 300, 2) != nullptr);
     assert(db.find(0, MoveKind::Spell, 201, 0) != nullptr);
     assert(db.find(1, MoveKind::Normal, 300, 0) == nullptr);
+    // Optional fifth hit field is a verified 与CH flag, not a guessed
+    // ability property. The old four-column profile format stays valid.
+    MoveCatalog chCatalog;
+    std::istringstream sourcedProfile(
+        "4|skill|585|4|Emerald|1|1000:1:1:0:1;500:1:1:0:0\n");
+    assert(chCatalog.read(sourcedProfile));
+    const Move *chVerified=chCatalog.find(4,MoveKind::Skill,585,4);
+    assert(chVerified&&chVerified->verifiedFullHit);
+    assert(chVerified->hits.size()==2&&chVerified->hits[0].counterHitEligible);
+    assert(!chVerified->hits[1].counterHitEligible);
+    assert(estimate(*chVerified,normal,normal,{4./3.}).damage>
+           estimate(*chVerified,normal,normal).damage);
     // Published full-move maxima are neutral reference totals; dynamically
     // scaling them is approximate, especially for multi-hit guts/truncation.
     WikiMaxCatalog wiki;
@@ -244,6 +349,8 @@ int main() {
     a.attack = 1.4;
     b.defense = .8;
     assert(rescaleWikiMax(*known, a, b) == 6553);
+    a.activeWeather=1;a.spellMultiplier=1.25;a.typeIncludesWeather=true;
+    assert(rescaleWikiMax(*known,a,b)==8191); // no second 1.25
     RecordTracker record;
     record.observe(10000, 9800, 500, 1);
     record.observe(9800, 9400, 500, 2);

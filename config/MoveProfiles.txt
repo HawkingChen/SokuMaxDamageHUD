@@ -1,7 +1,10 @@
 # SokuMaxDamageHUD manually validated full-hit data (empty in this prototype).
-# character|kind|action_or_card_id|level|name|verifiedFullHit|base:rateAfter:special:limit;...
+# character|kind|action_or_card_id|level|name|verifiedFullHit|base:rateAfter:special:limit[:canCH];...
 # Kinds: normal, skill, spell. Original 20 characters: 0..19.
 # Spell entries use card ID 200..219, others use action ID.
 # The exact source, all-hit sequence, hit order and value must be verified in game
 # before flag 'verifiedFullHit' is set to 1. NEVER use guessed placeholder values.
+# Optional fifth value canCH=1 requires a verified opening-hit 与CH property.
+# Use 0 or omit if unproven; first-hit CH is applied ONLY to the first hit.
+# No verified per-hit entries have been populated yet.
 # Experimental runtime frame probing is configurable in SokuMaxDamageHUD.ini.

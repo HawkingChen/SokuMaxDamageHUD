@@ -17,6 +17,8 @@
 #include "FirstHit.hpp"
 #include "MeilingTiger.hpp"
 #include "SuikaGiant.hpp"
+#include "SkillSelection.hpp"
+#include "OpeningCounter.hpp"
 #include "HitSnapshots.hpp"
 #include "GameAssets.hpp"
 
@@ -54,9 +56,10 @@ std::vector<HudRow> g_rows;
 SokuLib::DrawUtils::RectangleShape g_background;
 whm::MoveCatalog g_catalog;
 whm::WikiMaxCatalog g_wikiMax;
+whm::OpeningCounterCatalog g_openingCounters;
 whm::RecordTracker g_record;
 whm::HitAttribution g_hitAttribution;
-bool g_allowUnverifiedProbes = true;
+bool g_allowUnverifiedProbes = false;
 std::vector<whm::Move> g_probeCache;
 int g_probeCharacter = -1;
 const void *g_probeDataSource = nullptr;
@@ -404,18 +407,85 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
     view.firstHitActive=hit.applies;
     view.firstHitMultiplier=hit.applies?hit.multiplier:1.;
 
-    auto amount=[&](const StaticMove &m){
-        double type=m.kind=="spell"?own->spellDmgMultiplier:m.kind=="skill"?own->specialDmgMultiplier:1.;
-        double multiplier=view.attack*view.defense*type;
-        if (!std::isfinite(multiplier)||multiplier<=0||multiplier>50)return 0;
-        const double effective=multiplier*whm::gutsFactor(enemy->HP);
-        if (m.kind=="skill" && view.character==17)
+    // Shared effective input: the game's special/spell multipliers ALREADY
+    // include Hail/Drizzle and must not be applied twice by the step engine.
+    whm::Fighter rankOwn{}, rankTarget{};
+    rankOwn.character=view.character;
+    rankOwn.attack=view.attack;
+    rankOwn.skillMultiplier=view.skillMultiplier;
+    rankOwn.spellMultiplier=view.spellMultiplier;
+    rankOwn.activeWeather=view.weather;
+    rankOwn.typeIncludesWeather=true;
+    rankTarget.character=view.opponentCharacter;
+    rankTarget.defense=view.defense;
+    rankTarget.hp=enemy->HP;
+    auto currentSkillLevel=[&](int card) {
+        const int idx=whm::skillIndex(view.character,card);
+        if(idx<0)return -1;
+        return whm::activeSkillLevel(view.character,card,
+                   ownCounters.skillMap[idx].notUsed,
+                   static_cast<int>(own->skilledSkillLevel[idx]),
+                   static_cast<int>(own->effectiveSkillLevel[idx]));
+    };
+    // First compare complete, individually validated per-level hit profiles.
+    // Then a sourced Wiki one-move maximum, then the original Cleista value.
+    // Experimental frame probes cannot displace a known static entry.
+    auto amount=[&](const StaticMove &m,int level=-1) {
+        double type=m.kind=="spell"?view.spellMultiplier:
+                    m.kind=="skill"?view.skillMultiplier:1.;
+        const double multiplier=view.attack*view.defense*type;
+        if(!std::isfinite(multiplier)||multiplier<=0||multiplier>50.)return 0;
+        const double effective=multiplier*view.hpFactor;
+        int ordinary=static_cast<int>(m.damage*effective);
+        int lookupId=-1;
+        whm::MoveKind kind=whm::MoveKind::Normal;
+        if(m.kind=="skill") {
+            kind=whm::MoveKind::Skill;
+            lookupId=whm::skillActionForNotation(view.character,m.card,m.notation);
+        } else if(m.kind=="spell") {
+            kind=whm::MoveKind::Spell;
+            lookupId=m.card;
+        }
+        if(lookupId>=0) {
+            const whm::Move *profile=g_catalog.find(view.character,kind,lookupId,level);
+            if(profile&&profile->verifiedFullHit) {
+                whm::EstimateOptions opts;
+                if(kind==whm::MoveKind::Skill) {
+                    if(view.character==17&&view.forcedFirstHitArmed)
+                        opts.openingCounterFactor=whm::meilingTigerFirstHitFactor(
+                            true,tigerFirstHitScale);
+                    else if(view.weather==16&&!view.weatherSealed&&freshCombo)
+                        opts.openingCounterFactor=4./3.;
+                }
+                // Verified profile includes real hit order, rate/limit and
+                // current HP guts changes, plus a sourced CH bit per hit.
+                // Its first-hit calculation is final: never boost it again.
+                const auto e=whm::estimate(*profile,rankOwn,rankTarget,opts);
+                if(e.valid&&e.complete)return e.damage;
+            }
+        }
+        if(m.kind=="spell") {
+            if(const auto *wiki=g_wikiMax.find(view.character,kind,m.card,level)) {
+                const int sourced=whm::rescaleWikiMax(*wiki,rankOwn,rankTarget);
+                if(sourced>0)ordinary=sourced;
+            }
+        }
+        if(m.kind!="skill")return ordinary;
+        const int first=g_openingCounters.firstHit(view.character,m.card,m.notation,level);
+        if(view.character==17 && view.forcedFirstHitArmed) {
+            // Strong Tiger CH overrides ordinary Sandstorm CH; the same
+            // qualifying first hit must never receive two base CH factors.
+            const double tiger=whm::meilingTigerFirstHitFactor(true,tigerFirstHitScale);
+            if(first>0 && tiger>1.)
+                return ordinary+static_cast<int>(std::floor(
+                    std::min(first,m.damage)*effective*(tiger-1.)+1e-8));
             return whm::meilingTigerAdjustedDamage(
-                view.character,m.card,m.damage,effective,
-                view.forcedFirstHitArmed,tigerFirstHitScale);
-        // Spells and all other characters retain their existing estimate.
-        // CH must not be applied to projectile skill damage or entire multi-hits.
-        return static_cast<int>(m.damage*effective);
+                view.character,m.card,m.damage,effective,true,tigerFirstHitScale);
+        }
+        const bool sandstorm=view.weather==16&&!view.weatherSealed;
+        return ordinary+(
+            sandstorm&&freshCombo&&first>0?
+            static_cast<int>(std::floor(std::min(first,m.damage)*effective/3.+1e-8)):0);
     };
     if (view.suikaGiantActive) {
         // In MPP, only giant-form basic attacks remain usable. The ordinary
@@ -436,8 +506,10 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         std::string bestNotation,bestName;
         for(const auto &m:g_staticMoves){
             if(m.character!=view.character||m.kind!="skill")continue;
-            if(m.card<100||m.card>=132||own->skilledSkillLevel[m.card-100]<0)continue;
-            int damage=amount(m);
+            const int level=currentSkillLevel(m.card);
+            if(level<0||!whm::skillCommandAvailableAtLevel(
+                view.character,m.card,m.notation,level))continue;
+            int damage=amount(m,level);
             if(damage>view.strongest.damage){
                 bestNotation=whm::normalizeNotation(m.notation);bestName=m.name;
                 view.strongest=makeCard(view.character,m.card,damage,m.notation,
@@ -447,6 +519,27 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                                     whm::normalizeNotation(m.notation));
                 view.strongest.notation=bestNotation;
             }
+        }
+    }
+    // Opt-in last resort: if NO sourced skill was found, use live direct-
+    // attack frames as a PARTIAL estimate. Do not let partial frame probing
+    // outrank the static Cleista or verified per-level result, because spawned
+    // bullets and command follow-ups are absent from frame data.
+    if(!view.suikaGiantActive && view.strongest.damage<=0 &&
+       g_allowUnverifiedProbes) {
+        buildProbeCache(*own);
+        for(const auto &move:g_probeCache) {
+            if(move.kind!=whm::MoveKind::Skill)continue;
+            const int card=whm::skillCardForAction(view.character,move.id);
+            if(currentSkillLevel(card)<0)continue;
+            const auto e=whm::estimate(move,rankOwn,rankTarget);
+            if(!e.valid||e.damage<=view.strongest.damage)continue;
+            const MoveLabel label=labelForAction(*own,move.id);
+            const std::string notation=label.notation.empty()?
+                "ACTION#"+std::to_string(move.id):label.notation;
+            view.strongest=makeCard(view.character,card,e.damage,notation,
+                                    notation,label.fallback,true);
+            view.strongest.names=label.names;
         }
     }
     for(const auto &card:own->handInfo.hand){
@@ -946,7 +1039,7 @@ void __fastcall onRender(SokuLib::BattleManager *mgr) {
 void loadSettings() {
     const auto folder=moduleFolder();
     const auto ini=folder/L"SokuMaxDamageHUD.ini";
-    g_allowUnverifiedProbes = GetPrivateProfileIntW(L"Damage", L"EnableExperimentalFrameProbe", 1, ini.c_str()) != 0;
+    g_allowUnverifiedProbes = GetPrivateProfileIntW(L"Damage", L"EnableExperimentalFrameProbe", 0, ini.c_str()) != 0;
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
     g_y = GetPrivateProfileIntW(L"HUD", L"Y", g_y, ini.c_str());
     g_w = std::max(170, std::min(400, static_cast<int>(GetPrivateProfileIntW(L"HUD", L"Width", g_w, ini.c_str()))));
@@ -989,6 +1082,8 @@ void loadSettings() {
     if (in) g_catalog.read(in);
     std::ifstream wiki(folder/L"WikiMaxProfiles.txt");
     if (wiki) g_wikiMax.read(wiki);
+    std::ifstream opening(folder/L"OpeningCounter.txt");
+    if (opening) g_openingCounters.read(opening);
 }
 } // anonymous namespace
 

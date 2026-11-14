@@ -16,9 +16,14 @@ double gutsFactor(int hp) {
     return std::floor(70.0 + static_cast<double>(clamped) * 3.0 / 1000.0) / 100.0;
 }
 
-Estimate estimate(const Move &move, const Fighter &attacker, const Fighter &defender) {
+Estimate estimate(const Move &move, const Fighter &attacker, const Fighter &defender,
+                  const EstimateOptions &options) {
     Estimate result;
     if (move.hits.empty()) { result.reason = "no hits"; return result; }
+    if (!std::isfinite(options.openingCounterFactor) ||
+        options.openingCounterFactor < 1.0 || options.openingCounterFactor > 4.0) {
+        result.reason = "invalid opening CH factor";return result;
+    }
     if (!sane(attacker.attack) || !sane(defender.defense) ||
         !sane(attacker.spellMultiplier) || !sane(attacker.skillMultiplier)) {
         result.reason = "invalid multiplier"; return result;
@@ -26,6 +31,7 @@ Estimate estimate(const Move &move, const Fighter &attacker, const Fighter &defe
     double runningRate = 1.0;
     int hp = std::clamp(defender.hp, 0, 10000);
     int limit = 0;
+    bool opening = true;
     for (const auto &hit : move.hits) {
         if (hit.baseDamage < 0 || hit.baseDamage > 32767 ||
             !sane(hit.rateAfter) || hit.rateAfter > 1.0 || !sane(hit.special) ||
@@ -40,11 +46,14 @@ Estimate estimate(const Move &move, const Fighter &attacker, const Fighter &defe
         const double typeBonus = move.kind == MoveKind::Spell ? attacker.spellMultiplier :
                                  move.kind == MoveKind::Skill ? attacker.skillMultiplier : 1.0;
         dealt = truncMul(dealt, typeBonus);
+        if(opening && hit.counterHitEligible)
+            dealt = truncMul(dealt, options.openingCounterFactor);
+        opening = false;
         // Separate W term in the published Hisoutensoku damage formula.
         // Needs practice-mode verification to exclude overlap with type multipliers.
-        const double weatherBonus =
+        const double weatherBonus = !attacker.typeIncludesWeather && (
             (attacker.activeWeather == 1 && move.kind == MoveKind::Spell) ||
-            (attacker.activeWeather == 4 && move.kind == MoveKind::Skill) ? 1.25 : 1.0;
+            (attacker.activeWeather == 4 && move.kind == MoveKind::Skill)) ? 1.25 : 1.0;
         dealt = truncMul(dealt, weatherBonus);
         dealt = truncMul(dealt, gutsFactor(hp));
         result.damage += dealt;
