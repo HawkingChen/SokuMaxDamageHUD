@@ -14,6 +14,15 @@ A damage reference HUD for **Touhou Hisoutensoku v1.10a**. A companion panel bel
 
 *HUD detail*
 
+
+### Display layouts
+
+The HUD supports **bottom horizontal**, **left portrait**, and **right portrait** docking in both windowed mode and **WindowResizer borderless fullscreen** (exclusive fullscreen is not supported). Use the panel's **direction buttons**, or **drag the HUD with the mouse** toward the bottom, left, or right edge of the game: a translucent preview shows where it will snap on release. No keyboard shortcut is required.
+
+![Right portrait sidebar alongside the game in a fullscreen-capable layout](docs/hud-sidebar-fullscreen.webp)
+
+*In-game screenshot of the right sidebar; switch among bottom, left and right with buttons or drag-and-drop.*
+
 ## Install
 
 Requires Hisoutensoku v1.10a with a working mod loader: SokuLauncher, SokuModLoader or SWRSToys.
