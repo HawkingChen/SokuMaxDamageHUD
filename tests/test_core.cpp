@@ -108,6 +108,14 @@ static void testProjectileRecords() {
     assert(rainbow.best().damage==1700&&rainbow.best().actionId==608);
     rainbow.observeDamage(900,608,190,6); // second cast: not merged
     assert(rainbow.best().damage==1700);
+    // Tombstones are deliberately short-lived: an unrelated projectile
+    // appearing much later must NOT steal a previous 4-card spell identity.
+    HitAttribution expired;
+    auto priorCast=expired.observe(sunCast,sunCast,{}, {sunRoot});
+    assert(priorCast.valid());
+    expired.observe(sunCast,idle,{sunRoot},{});
+    for(int i=0;i<95;++i)expired.observe(idle,idle,{},{});
+    assert(!expired.observe(idle,idle,{}, {sunChild}).valid());
 }
 
 static void testHudRoundingModes() {
