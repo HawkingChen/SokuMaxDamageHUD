@@ -227,6 +227,10 @@ int main() {
     assert(skillActionForNotation(17,101,"j.623B")==522);
     assert(skillActionForNotation(4,109,"421B")==585);
     assert(skillActionForNotation(17,101,"623A")==-1);
+    assert(!skillCommandAvailableAtLevel(17,108,"j.214B",0));
+    assert(!skillCommandAvailableAtLevel(17,108,"j.214C",1));
+    assert(skillCommandAvailableAtLevel(17,108,"j.214B",2));
+    assert(skillCommandAvailableAtLevel(17,108,"214B",0));
     // With CH eligibility explicitly sourced, Yellow Sand changes only
     // the first hit, not the rest of a multi-hit move (or unknown shots).
     OpeningCounterCatalog open;
