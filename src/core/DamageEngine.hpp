@@ -12,6 +12,7 @@ struct Hit {
     double rateAfter = 1.0;  // Applied to subsequent hits, not this hit.
     double special = 1.0;    // Multiplicative correction specific to this hit.
     int limit = 0;
+    bool counterHitEligible = false; // verified first-hit 与CH; default unknown/no
 };
 
 struct Move {
@@ -44,9 +45,17 @@ struct Estimate {
     std::string reason;
 };
 
+struct EstimateOptions {
+    // 4/3 for eligible Yellow Sand CH, or 4/3 * the specific Meiling
+    // Tiger factor. Only a move's FIRST hit can use it, and ONLY if its
+    // manually verified per-hit data explicitly marks that hit eligible.
+    double openingCounterFactor = 1.0;
+};
+
 // Implements the community-researched damage pipeline with truncation after each stage.
 // Real-game behavior must be compared against practice mode before estimates are certified.
-Estimate estimate(const Move &move, const Fighter &attacker, const Fighter &defender);
+Estimate estimate(const Move &move, const Fighter &attacker, const Fighter &defender,
+                  const EstimateOptions &options = {});
 
 // Return a two-decimal-step proportional guts factor from target's *current* HP.
 double gutsFactor(int defenderHP);
