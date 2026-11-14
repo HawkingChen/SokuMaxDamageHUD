@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   pull_request:
 permissions:
-  contents: read
+  contents: write
 jobs:
   windows:
     runs-on: windows-2022
@@ -73,4 +73,36 @@ jobs:
           path: ${{ steps.package.outputs.zip }}
           if-no-files-found: error
           retention-days: 30
-      # Publishing a GitHub Release is a separate, explicit action.
+      # Only the specifically approved squash-merge commit triggers a Release.
+      # Other PRs and commits keep producing CI Artifacts without publishing.
+      - name: Publish requested GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[publish-release]')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content VERSION -Raw).Trim()
+          $tag = "v$version"
+          $zip = "${{ steps.package.outputs.zip }}"
+          if (!(Test-Path -LiteralPath $zip)) { throw "Missing release archive: $zip" }
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          $hashAsset = "$zip.sha256"
+          [IO.File]::WriteAllText((Join-Path $PWD $hashAsset), "$sha  $(Split-Path $zip -Leaf)`n", [Text.UTF8Encoding]::new($false))
+          $notes = @'
+          SokuMaxDamageHUD v0.5.6 — Touhou Hisoutensoku 1.10a Win32.
+
+          - README screenshots and guidance for bottom, left and right HUD docking, changed by direction buttons or mouse dragging.
+          - Windowed and WindowResizer borderless-fullscreen layouts, automatic fit and side switching.
+          - Includes the recent fixes for Meiling SC209 Rainbow Brilliance Palm's cinematic follow-up damage recognition and shorter English SKILL / SC multiplier labels.
+          - Includes source-aware skill ranking, Meiling Tiger and Yellow Sand first-hit handling, and sustained spell damage tracking.
+          - UI language options: Chinese, Japanese, English.
+          - Extract the SokuMaxDamageHUD folder into the game's modules directory. SokuLauncher/SokuModLoader/SWRSToys is required.
+          - The release does not contain game artwork; icons are extracted locally from the player's original game archives.
+          - Real game damage and fullscreen behavior should still be tested under Proton/Steam Deck.
+          '@
+          $notesFile = Join-Path $PWD "dist/RELEASE-NOTES.txt"
+          [IO.File]::WriteAllText($notesFile,$notes,[Text.UTF8Encoding]::new($false))
+          gh release create $tag $zip $hashAsset --target $env:GITHUB_SHA --title "SokuMaxDamageHUD $tag" --notes-file $notesFile --latest
+          if ($LASTEXITCODE -ne 0) { throw "Release publishing failed" }
+
