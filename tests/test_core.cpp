@@ -8,6 +8,7 @@
 #include "HudText.hpp"
 #include <cfenv>
 #include "FirstHit.hpp"
+#include "MeilingTiger.hpp"
 #include "HitAttribution.hpp"
 #include <cassert>
 #include <cmath>
@@ -268,6 +269,30 @@ int main() {
     assert(!weatherLabelVisible(21, false, 1., 1.)); // no weather
     assert(!weatherLabelVisible(4, true, 1.25, 1.));  // sealed
     assert(weatherLabelVisible(7, false, 1.1, 1.));   // unexplained effective buff
+
+    // Meiling (character 17): Tiger is a one-hit melee CH modifier,
+    // not attackPower, not a blanket special-move multiplier.
+    static_assert(meilingFirstHitKind(17,105)==MeilingFirstHitKind::SingleMelee);
+    static_assert(meilingFirstHitKind(17,101)==MeilingFirstHitKind::SingleMelee);
+    static_assert(meilingFirstHitKind(17,103)==MeilingFirstHitKind::Projectile);
+    static_assert(meilingFirstHitKind(17,107)==MeilingFirstHitKind::Projectile);
+    static_assert(meilingFirstHitKind(17,104)==MeilingFirstHitKind::MixedOrMultipleMelee);
+    static_assert(meilingFirstHitKind(18,105)==MeilingFirstHitKind::Unknown);
+    // 1430 = neutral reference for Meiling's Red Energy Release (623B/C).
+    // Fierce Tiger (2.0) grants the *first melee hit* forced CH (4/3).
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,true,2.)==3813);
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,false,2.)==1430);
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,true,1.)==1906); // Tiger Lv1
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,true,1.1)==2097); // Tiger Lv2
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,true,1.2)==2288); // Tiger Lv3
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,true,1.3)==2478); // Tiger Lv4
+    assert(meilingTigerAdjustedDamage(17,103,1797,1.,true,2.)==1797); // bullets
+    assert(meilingTigerAdjustedDamage(17,107,1069,1.,true,2.)==1069); // bullet sphere
+    assert(meilingTigerAdjustedDamage(17,104,1500,1.,true,2.)==1500); // unknown first hit
+    assert(meilingTigerAdjustedDamage(17,104,1500,1.,true,2.,300)==2000); // ONLY first 300
+    assert(meilingTigerAdjustedDamage(18,105,1430,1.,true,2.)==1430);
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,true,0.5)==1430); // invalid scale
+    assert(meilingTigerAdjustedDamage(17,105,1430,1.,true,4.)==1430); // invalid scale
 
     // --- First-hit-only bonus: conservative gating, no whole-move inflation.
     FirstHitSignals ready{1.3, true, true, true, true, false, false, true};
