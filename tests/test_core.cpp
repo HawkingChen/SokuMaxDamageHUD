@@ -281,6 +281,27 @@ int main() {
     standard.activeWeather = 4;
     assert(estimate(singleSpell, standard, victim).damage == 1000);
     assert(estimate(singleSkill, standard, victim).damage == 1250);
+    // Runtime effective type multipliers already include Hail/Drizzle.
+    // They must NOT be multiplied by 1.25 again by the step engine.
+    standard.typeIncludesWeather=true;
+    standard.skillMultiplier=1.25;
+    assert(estimate(singleSkill, standard, victim).damage == 1250);
+    standard.activeWeather=1;standard.spellMultiplier=1.25;
+    assert(estimate(singleSpell, standard, victim).damage == 1250);
+    standard.activeWeather=4;standard.skillMultiplier=1.25;
+    // CH is a separately verified bit on the first hit, not every hit.
+    Move chMove{0,MoveKind::Skill,500,2,"sourced",{
+        {900,1.,1.,0,true}, {600,1.,1.,0,true}},true};
+    Fighter normal{};normal.hp=10000;
+    const int noCH=estimate(chMove,normal,normal).damage;
+    const int yesCH=estimate(chMove,normal,normal,{4./3.}).damage;
+    assert(yesCH>noCH&&yesCH-noCH>=295&&yesCH-noCH<=301);
+    chMove.hits[0].counterHitEligible=false;
+    assert(estimate(chMove,normal,normal,{4./3.}).damage==noCH);
+    chMove.hits[0].counterHitEligible=true;
+    // Different current HP changes second-hit guts in the verified engine.
+    Fighter lowHP=normal;lowHP.hp=1000;
+    assert(estimate(chMove,normal,lowHP,{4./3.}).damage<yesCH);
     // An incomplete profile must never be silently tagged complete.
     singleSpell.verifiedFullHit = false;
     assert(!estimate(singleSpell, standard, victim).complete);
@@ -292,6 +313,18 @@ int main() {
     assert(db.find(0, MoveKind::Normal, 300, 2) != nullptr);
     assert(db.find(0, MoveKind::Spell, 201, 0) != nullptr);
     assert(db.find(1, MoveKind::Normal, 300, 0) == nullptr);
+    // Optional fifth hit field is a verified 与CH flag, not a guessed
+    // ability property. The old four-column profile format stays valid.
+    MoveCatalog chCatalog;
+    std::istringstream sourcedProfile(
+        "4|skill|585|4|Emerald|1|1000:1:1:0:1;500:1:1:0:0\n");
+    assert(chCatalog.read(sourcedProfile));
+    const Move *chVerified=chCatalog.find(4,MoveKind::Skill,585,4);
+    assert(chVerified&&chVerified->verifiedFullHit);
+    assert(chVerified->hits.size()==2&&chVerified->hits[0].counterHitEligible);
+    assert(!chVerified->hits[1].counterHitEligible);
+    assert(estimate(*chVerified,normal,normal,{4./3.}).damage>
+           estimate(*chVerified,normal,normal).damage);
     // Published full-move maxima are neutral reference totals; dynamically
     // scaling them is approximate, especially for multi-hit guts/truncation.
     WikiMaxCatalog wiki;
@@ -304,6 +337,8 @@ int main() {
     a.attack = 1.4;
     b.defense = .8;
     assert(rescaleWikiMax(*known, a, b) == 6553);
+    a.activeWeather=1;a.spellMultiplier=1.25;a.typeIncludesWeather=true;
+    assert(rescaleWikiMax(*known,a,b)==8192); // no second 1.25
     RecordTracker record;
     record.observe(10000, 9800, 500, 1);
     record.observe(9800, 9400, 500, 2);
