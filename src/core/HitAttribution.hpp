@@ -108,7 +108,17 @@ public:
         if(before.hitBoxes)add(possible,beforeOrigin);
         if(after.hitBoxes)add(possible,afterOrigin);
         if((before.hitBoxes||after.hitBoxes)&&contact(after.collision,before.collision,
-             after.limit,before.limit,after.hitStop,before.hitStop))add(hits,casting);
+             after.limit,before.limit,after.hitStop,before.hitStop)) {
+            // A fresh activation right after the previous card's ALT_EFFECT
+            // must NOT inherit its final frame's collision as the old cast.
+            // Only in this exact 650+ -> 600+ same-card transition, use the
+            // *new* activation instance; 600+ -> 650+ stays the old instance.
+            const bool newActivation=isSpellFollowupAction(before.action) &&
+                isSpellActivationAction(after.action) &&
+                canonicalAttackAction(before.action)==after.action &&
+                afterOrigin.valid()&&afterOrigin!=beforeOrigin;
+            add(hits,newActivation?afterOrigin:casting);
+        }
         for(const auto &[id,t]:objects_)
             if(t.sample.owned&&t.sample.hitBoxes&&t.sample.limit>0)add(possible,t.origin);
         std::map<std::uintptr_t,Tracked> next;
