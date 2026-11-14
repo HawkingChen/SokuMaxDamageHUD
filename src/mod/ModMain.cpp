@@ -211,8 +211,8 @@ std::string actionName(const SokuLib::v2::Player &player, int action) {
         case 412:return "2C";case 413:return "4C";case 414:return "j5C";case 415:return "j6C";
         case 416:return "j2C";case 417:return "j1C";case 418:return "66C";
     }
-    if (action >= 600 && action < 620)
-        return cardName(player, static_cast<unsigned short>(action - 400));
+    if (const int spell=whm::spellCardForAction(action);spell>=0)
+        return cardName(player,static_cast<unsigned short>(spell));
     return "ACTION#" + std::to_string(action);
 }
 
@@ -255,9 +255,7 @@ struct MoveLabel {
 };
 MoveLabel labelForAction(const SokuLib::v2::Player &player, int action) {
     const int character = static_cast<int>(player.characterIndex);
-    const int card = action >= 500 && action < 600
-        ? whm::skillCardForAction(character, action)
-        : action >= 600 && action < 620 ? action - 400 : -1;
+    const int card=whm::cardForAction(character,action);
     const std::string raw = actionName(player, action);
     const std::string separator = " · "; // "·" is two UTF-8 bytes, not one
     const std::size_t cut = raw.rfind(separator);
@@ -265,8 +263,8 @@ MoveLabel labelForAction(const SokuLib::v2::Player &player, int action) {
     std::string notation = cut == std::string::npos ? "" :
         whm::normalizeNotation(raw.substr(cut + separator.size()));
     std::string lookup = notation;
-    if (action >= 600 && action < 620) {
-        lookup = "sc" + std::to_string(card); // spell row in MoveNames.tsv
+    if (whm::spellCardForAction(action)>=0) {
+        lookup = "sc" + std::to_string(card); // includes scripted ALT_EFFECT
         notation.clear();                     // a card name is not a notation
     } else if (cut == std::string::npos) {
         const unsigned char first = static_cast<unsigned char>(raw.empty() ? 0 : raw[0]);
