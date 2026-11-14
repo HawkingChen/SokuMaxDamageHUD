@@ -42,9 +42,9 @@ Estimate estimate(const Move &move, const Fighter &attacker, const Fighter &defe
         dealt = truncMul(dealt, typeBonus);
         // Separate W term in the published Hisoutensoku damage formula.
         // Needs practice-mode verification to exclude overlap with type multipliers.
-        const double weatherBonus =
+        const double weatherBonus = !attacker.typeIncludesWeather && (
             (attacker.activeWeather == 1 && move.kind == MoveKind::Spell) ||
-            (attacker.activeWeather == 4 && move.kind == MoveKind::Skill) ? 1.25 : 1.0;
+            (attacker.activeWeather == 4 && move.kind == MoveKind::Skill)) ? 1.25 : 1.0;
         dealt = truncMul(dealt, weatherBonus);
         dealt = truncMul(dealt, gutsFactor(hp));
         result.damage += dealt;
