@@ -1030,11 +1030,15 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
                                 : mgr->leftCharacterManager.objectBase.hp;
     const auto *attacker=viewPlayer(mgr,side);
     const auto *target=viewPlayer(mgr,1-side);
-    const auto source=g_hitAttribution.observe(actorBefore,whm::actorContact(*attacker),
+    const auto source=g_hitAttribution.observeDetailed(
+        actorBefore,whm::actorContact(*attacker),
         objectsBefore,whm::projectileContacts(*attacker));
     const int dealt=whm::observedDamage(before,after,comboBefore,
         whm::comboReading(*attacker,*target));
-    g_record.observeDamage(dealt,source.action,mgr->frameCount,source.instance);
+    // NEVER attribute the whole 5C + j6A (or other mixed-source) frame to
+    // the sole detected contact, and never rank the aggregate as one move.
+    g_record.observeDamage(dealt,source.origin.action,mgr->frameCount,
+                           source.origin.instance,source.mixed);
     if (mgr->frameCount - g_lastRefresh >= 12 || g_lastRefresh == 0) {
         g_lastRefresh = mgr->frameCount;
         updateRows(composeHUD(mgr));
