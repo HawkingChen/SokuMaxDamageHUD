@@ -59,7 +59,7 @@ whm::WikiMaxCatalog g_wikiMax;
 whm::OpeningCounterCatalog g_openingCounters;
 whm::RecordTracker g_record;
 whm::HitAttribution g_hitAttribution;
-bool g_allowUnverifiedProbes = true;
+bool g_allowUnverifiedProbes = false;
 std::vector<whm::Move> g_probeCache;
 int g_probeCharacter = -1;
 const void *g_probeDataSource = nullptr;
@@ -507,6 +507,27 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                                     whm::normalizeNotation(m.notation));
                 view.strongest.notation=bestNotation;
             }
+        }
+    }
+    // Opt-in last resort: if NO sourced skill was found, use live direct-
+    // attack frames as a PARTIAL estimate. Do not let partial frame probing
+    // outrank the static Cleista or verified per-level result, because spawned
+    // bullets and command follow-ups are absent from frame data.
+    if(!view.suikaGiantActive && view.strongest.damage<=0 &&
+       g_allowUnverifiedProbes) {
+        buildProbeCache(*own);
+        for(const auto &move:g_probeCache) {
+            if(move.kind!=whm::MoveKind::Skill)continue;
+            const int card=whm::skillCardForAction(view.character,move.id);
+            if(currentSkillLevel(card)<0)continue;
+            const auto e=whm::estimate(move,rankOwn,rankTarget);
+            if(!e.valid||e.damage<=view.strongest.damage)continue;
+            const MoveLabel label=labelForAction(*own,move.id);
+            const std::string notation=label.notation.empty()?
+                "ACTION#"+std::to_string(move.id):label.notation;
+            view.strongest=makeCard(view.character,card,e.damage,notation,
+                                    notation,label.fallback,true);
+            view.strongest.names=label.names;
         }
     }
     for(const auto &card:own->handInfo.hand){
@@ -1006,7 +1027,7 @@ void __fastcall onRender(SokuLib::BattleManager *mgr) {
 void loadSettings() {
     const auto folder=moduleFolder();
     const auto ini=folder/L"SokuMaxDamageHUD.ini";
-    g_allowUnverifiedProbes = GetPrivateProfileIntW(L"Damage", L"EnableExperimentalFrameProbe", 1, ini.c_str()) != 0;
+    g_allowUnverifiedProbes = GetPrivateProfileIntW(L"Damage", L"EnableExperimentalFrameProbe", 0, ini.c_str()) != 0;
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
     g_y = GetPrivateProfileIntW(L"HUD", L"Y", g_y, ini.c_str());
     g_w = std::max(170, std::min(400, static_cast<int>(GetPrivateProfileIntW(L"HUD", L"Width", g_w, ini.c_str()))));
