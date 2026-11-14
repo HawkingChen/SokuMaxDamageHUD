@@ -32,6 +32,9 @@ struct Fighter {
     double spellMultiplier = 1.0;
     double skillMultiplier = 1.0;
     int activeWeather = 0; // Vanilla weather ID: drizzle=1, hail=4.
+    // True when spellMultiplier / skillMultiplier is read directly from the
+    // game's effective fields (they already contain the weather effect).
+    bool typeIncludesWeather = false;
 };
 
 struct Estimate {
