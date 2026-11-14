@@ -60,6 +60,8 @@ whm::OpeningCounterCatalog g_openingCounters;
 whm::RecordTracker g_record;
 whm::HitAttribution g_hitAttribution;
 bool g_allowUnverifiedProbes = false;
+bool g_damageTraceEnabled = false;
+std::ofstream g_damageTraceFile;
 std::vector<whm::Move> g_probeCache;
 int g_probeCharacter = -1;
 const void *g_probeDataSource = nullptr;
@@ -1018,7 +1020,8 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const auto *ownBefore=viewPlayer(mgr,side);
     const auto *targetBefore=viewPlayer(mgr,1-side);
     const auto actorBefore=whm::actorContact(*ownBefore);
-    const auto objectsBefore=whm::projectileContacts(*ownBefore);
+    whm::ProjectileSnapshotDiag projectilePreDiag;
+    const auto objectsBefore=whm::projectileContacts(*ownBefore,&projectilePreDiag);
     const auto comboBefore=whm::comboReading(*ownBefore,*targetBefore);
     const int result = (mgr->*g_originalProcess)();
     if (ownSide() != side || &SokuLib::getBattleMgr()!=mgr ||
@@ -1030,15 +1033,57 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
                                 : mgr->leftCharacterManager.objectBase.hp;
     const auto *attacker=viewPlayer(mgr,side);
     const auto *target=viewPlayer(mgr,1-side);
+    whm::ProjectileSnapshotDiag projectilePostDiag;
+    const auto actorAfter=whm::actorContact(*attacker);
+    const auto objectsAfter=whm::projectileContacts(*attacker,&projectilePostDiag);
+    const auto comboAfter=whm::comboReading(*attacker,*target);
     const auto source=g_hitAttribution.observeDetailed(
-        actorBefore,whm::actorContact(*attacker),
-        objectsBefore,whm::projectileContacts(*attacker));
-    const int dealt=whm::observedDamage(before,after,comboBefore,
-        whm::comboReading(*attacker,*target));
+        actorBefore,actorAfter,objectsBefore,objectsAfter);
+    const int dealt=whm::observedDamage(before,after,comboBefore,comboAfter);
     // NEVER attribute the whole 5C + j6A (or other mixed-source) frame to
     // the sole detected contact, and never rank the aggregate as one move.
     g_record.observeDamage(dealt,source.origin.action,mgr->frameCount,
                            source.origin.instance,source.mixed);
+    // Opt-in diagnostic log. No network access, no raw memory writes, no
+    // instrumentation of the game's own damage routines. Never enable in
+    // ordinary builds without the player's explicit INI setting.
+    if(g_damageTraceEnabled && g_damageTraceFile &&
+       (dealt>0 || actorBefore.action==410 || actorAfter.action==410 ||
+        (static_cast<int>(attacker->characterIndex)==9 &&
+         (actorBefore.action==307 || actorAfter.action==307)))) {
+        auto &out=g_damageTraceFile;
+        out<<"frame="<<mgr->frameCount<<" char="<<static_cast<int>(attacker->characterIndex)
+           <<" action="<<actorBefore.action<<">"<<actorAfter.action
+           <<" seq="<<actorBefore.sequence<<">"<<actorAfter.sequence
+           <<" hp="<<before<<">"<<after<<" dealt="<<dealt
+           <<" combo="<<comboBefore.hits<<":"<<comboBefore.damage
+           <<">"<<comboAfter.hits<<":"<<comboAfter.damage
+           <<" source="<<source.origin.action<<":"<<source.origin.instance
+           <<" mixed="<<source.mixed
+           <<" hits="<<source.detectedContacts
+           <<" possible="<<source.plausibleOrigins
+           <<" live="<<source.liveProjectiles
+           <<" unresolved="<<source.unownedOrigins
+           <<" snapshot="<<projectilePreDiag.status<<"/"<<projectilePostDiag.status
+           <<" list="<<projectilePreDiag.listCount<<"/"<<projectilePostDiag.listCount
+           <<" owned="<<projectilePreDiag.accepted<<"/"<<projectilePostDiag.accepted;
+        auto show=[&](const char *label,const std::vector<whm::ProjectileContact> &v){
+            out<<" "<<label<<"=[";
+            for(size_t i=0;i<v.size()&&i<16;++i) {
+                if(i)out<<";";
+                const auto &o=v[i];
+                out<<std::hex<<o.id<<":"<<o.parent<<std::dec
+                   <<":"<<o.generation<<":"<<o.collision<<":"
+                   <<o.limit<<":"<<o.hitBoxes;
+            }
+            if(v.size()>16)out<<";...";
+            out<<"]";
+        };
+        show("pre",objectsBefore);
+        show("post",objectsAfter);
+        out<<" best="<<g_record.best().actionId<<":"<<g_record.best().damage<<"\n";
+        out.flush();
+    }
     if (mgr->frameCount - g_lastRefresh >= 12 || g_lastRefresh == 0) {
         g_lastRefresh = mgr->frameCount;
         updateRows(composeHUD(mgr));
@@ -1077,6 +1122,12 @@ void loadSettings() {
     const auto folder=moduleFolder();
     const auto ini=folder/L"SokuMaxDamageHUD.ini";
     g_allowUnverifiedProbes = GetPrivateProfileIntW(L"Damage", L"EnableExperimentalFrameProbe", 0, ini.c_str()) != 0;
+    g_damageTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableDamageTrace", 0, ini.c_str()) != 0;
+    if(g_damageTraceFile.is_open())g_damageTraceFile.close();
+    if(g_damageTraceEnabled) {
+        g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
+        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: damage-source diagnostics enabled\n";
+    }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
     g_y = GetPrivateProfileIntW(L"HUD", L"Y", g_y, ini.c_str());
     g_w = std::max(170, std::min(400, static_cast<int>(GetPrivateProfileIntW(L"HUD", L"Width", g_w, ini.c_str()))));
