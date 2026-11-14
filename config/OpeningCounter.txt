@@ -6,8 +6,6 @@
 4|109|421B|-1|1320|https://w.atwiki.jp/patchouli_hitensoku/pages/68.html
 17|101|623B|-1|1200|https://soku.cleista.cc/framedata/meiling/623b-red-cannon
 17|101|623C|-1|1200|https://soku.cleista.cc/framedata/meiling/623c-red-cannon
-17|102|22B|-1|900|https://soku.cleista.cc/framedata/meiling/22b-yellow-quake-kick
-17|102|22C|-1|900|https://soku.cleista.cc/framedata/meiling/22c-yellow-quake-kick
 17|105|623B|-1|1430|https://soku.cleista.cc/framedata/meiling/623b-red-energy-release
 17|105|623C|-1|1430|https://soku.cleista.cc/framedata/meiling/623c-red-energy-release
 17|108|214B|-1|1320|https://soku.cleista.cc/framedata/meiling/214b-kick-of-showering-brilliance
