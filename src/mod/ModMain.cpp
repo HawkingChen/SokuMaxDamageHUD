@@ -332,6 +332,8 @@ PanelView g_panelView;
 // The legacy manager exposes the verified original 1.10a layout.
 static_assert(offsetof(SokuLib::CharacterManager, sacrificialDolls)==0x840);
 static_assert(offsetof(SokuLib::CharacterManager, controlRod)==0x844);
+// Suika's active Missing Purple Power duration shares this fixed 1.10a field.
+static_assert(offsetof(SokuLib::CharacterManager, missingPurplePowerTimeLeft)==0x892);
 std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
     const int side = ownSide();
     if (side == whm::kNoLocalPlayer) return {};
