@@ -52,7 +52,7 @@ class HitAttribution {
         // Moving 609 -> 659 is a spell's scripted follow-up, not a new
         // cast, even if sequence/frame resets at the cinematic transition.
         // A *new* 609 cast after 659 must start a new instance.
-        const bool restarted=sameRaw &&
+        const bool restarted=sameRaw && !isSpellFollowupAction(s.action) &&
             ((s.sequence==previousActor_.sequence &&
               s.animationFrame<previousActor_.animationFrame) ||
              (s.sequence==0 && previousActor_.sequence>0));
