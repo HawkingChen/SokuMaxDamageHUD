@@ -10,6 +10,7 @@
 #include "FirstHit.hpp"
 #include "MeilingTiger.hpp"
 #include "SuikaGiant.hpp"
+#include "PanelLayout.hpp"
 #include "HitAttribution.hpp"
 #include <cassert>
 #include <cmath>
@@ -92,7 +93,47 @@ static void testHudRoundingModes() {
     assert(std::fesetround(original)==0);
 }
 
+static void testPanelLayouts() {
+    using namespace whm::layout;
+    for(auto area:std::vector<Rect>{{0,0,1920,1040},{0,0,2560,1400},
+        {0,0,1280,800},{0,0,1366,728},{0,0,1024,728},{1920,-80,1920,1080}}) {
+        for(auto border:std::vector<Insets>{{8,31,8,8},{0,0,0,0}}) {
+            Input input;input.area=area;input.borders=border;
+            input.original={area.x+40,area.y+20,1280+border.left+border.right,960+border.top+border.bottom};
+            for(auto dock:{Dock::Bottom,Dock::Left,Dock::Right}) {
+                input.dock=dock;input.vertical=dock!=Dock::Bottom;
+                const auto result=plan(input);
+                const int cw=result.game.w-border.left-border.right,ch=result.game.h-border.top-border.bottom;
+                assert(cw*3==ch*4); // CONTENT ratio, never the outer frame
+                assert(result.game.x>=area.x&&result.game.y>=area.y);
+                assert(result.game.x+result.game.w<=area.x+area.w);
+                assert(result.game.y+result.game.h<=area.y+area.h);
+                assert(result.panel.x>=area.x&&result.panel.y>=area.y);
+                assert(result.panel.x+result.panel.w<=area.x+area.w);
+                assert(result.panel.y+result.panel.h<=area.y+area.h);
+                for(int n=0;n<100;++n)assert(plan(input).game==result.game);
+            }
+            input.autoFit=false;assert(plan(input).game==input.original);
+            input.autoFit=true;input.dock=Dock::Free;assert(plan(input).game==input.original);
+        }
+    }
+    Input wide;wide.original={240,0,1440,1080};wide.area={0,0,1920,1080};
+    wide.fullscreen=true;wide.vertical=true;wide.dock=Dock::Right;
+    assert(plan(wide).game.w==1440&&plan(wide).game.h==1080);
+    auto point=canonicalPoint(true,330,50);assert(point.first==924&&point.second==218);
+    assert(canonicalPoint(true,10,5).first==-1); // draggable header, not a button
+    PendingResize pending;Rect original{0,0,1280,960},target{0,0,960,720};
+    assert(pending.request(original,target,100));
+    assert(!pending.request(original,{0,0,800,600},200)); // no queued resize race
+    assert(pending.ready(target,300)&&!pending.pending);
+    assert(!pending.request(target,target,400));
+    assert(pending.request(target,original,500));
+    assert(pending.ready(target,2100)&&pending.blocked);
+    assert(!pending.request(target,original,2200)); // bounded, no resize loop
+}
+
 int main() {
+    testPanelLayouts();
     testHudRoundingModes();
     testProjectileRecords();
     using namespace whm;

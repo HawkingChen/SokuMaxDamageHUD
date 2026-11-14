@@ -49,7 +49,17 @@ To update, back up the old folder, close the game, and replace the files with th
 - **Current hand**: estimated spell damage in hand order.
 - **CN / JP / EN** changes language. **↑** collapses the panel; **＋** expands it. Preferences are saved automatically.
 
-Use windowed mode and leave room below the game. The panel appears in supported battle modes and hides when you leave battle or switch to another application.
+**Window layouts (0.5.0 onward):** the default bottom panel automatically shrinks the game if needed, keeping its client area at 4:3. Collapsing/hiding the HUD or leaving battle restores the original size. The HUD hides when another application has focus.
+
+| Action | Default shortcut |
+| --- | --- |
+| Hide / show HUD | Ctrl + Shift + H |
+| Switch horizontal / vertical | Ctrl + Shift + O |
+| Cycle bottom / left / right | Ctrl + Shift + P |
+
+Shortcuts work during battle while the game has focus. Drag a non-button area to move the panel. Release near the game's left, right or bottom edge to dock; elsewhere it floats freely without shrinking the game. Select a dock again to resume automatic layout.
+
+Supports ordinary windows and **WindowResizer borderless fullscreen**. A vertical panel can use the side margins on wide screens; a horizontal panel shrinks the game to leave room below. Exclusive fullscreen is unsupported. Set `[HUD] AutoFit=0` in `SokuMaxDamageHUD.ini` to disable automatic game resizing, adjust `SideWidth` for portrait width, or edit `[Hotkeys]` to change shortcuts.
 
 ## Limitations
 

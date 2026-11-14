@@ -8,6 +8,9 @@ https://github.com/HawkingChen/SokuMaxDamageHUD
 首次启动自动从本机游戏提取卡图，不需要另下素材或运行脚本。
 升级时先禁用旧版本并将旧目录移出 modules，避免重复加载。
 CN / JP / EN 切换语言；↑ 收起，＋ 展开。
+Ctrl+Shift+H 隐藏/显示；Ctrl+Shift+O 横竖切换；Ctrl+Shift+P 下/左/右切换。
+拖动非按钮区域可移动和吸附。隐藏、收起或退出对战后恢复游戏窗口尺寸。
+支持窗口模式和 WindowResizer 无边框全屏。AutoFit=0 可禁用自动缩放。
 所有估算仅供参考；本 MOD 不修改战斗数值、网络封包或 RNG。
 
 English
@@ -17,6 +20,9 @@ Requires Hisoutensoku v1.10a and a working mod loader.
 Artwork is extracted from your local game on first launch; no extra download or script.
 Disable older copies and move their folders out of modules before upgrading.
 CN / JP / EN changes language; ↑ collapses and + expands the panel.
+Ctrl+Shift+H: hide/show; Ctrl+Shift+O: horizontal/vertical; Ctrl+Shift+P: bottom/left/right.
+Drag a non-button area to move/dock. Hiding/collapsing/leaving battle restores game size.
+Use windowed or WindowResizer borderless fullscreen. AutoFit=0 disables automatic resizing.
 Damage values are estimates. The mod does not change battle stats, packets or RNG.
 
 日本語
@@ -26,6 +32,9 @@ Damage values are estimates. The mod does not change battle stats, packets or RN
 画像は初回起動時にローカルのゲームから抽出します。追加の素材やスクリプトは不要です。
 更新時は旧版を無効化し、旧フォルダーを modules の外へ移動してください。
 CN / JP / EN で言語切替、↑ で折りたたみ、＋ で展開します。
+Ctrl+Shift+H: 表示切替、Ctrl+Shift+O: 横/縦切替、Ctrl+Shift+P: 下/左/右切替。
+ボタン以外をドラッグして移動・吸着。非表示・折りたたみ・対戦終了時は元のサイズに戻します。
+ウィンドウまたは WindowResizer のボーダーレス全画面に対応。AutoFit=0 で自動縮小を無効化。
 ダメージは推定値です。戦闘の数値・通信パケット・乱数は変更しません。
 
 Direct SWRSToys: add under [Module] in your active SWRSToys.ini:

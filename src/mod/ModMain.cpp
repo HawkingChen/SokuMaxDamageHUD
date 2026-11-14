@@ -9,6 +9,7 @@
 #include "StyledPanel.hpp"
 #include "DamageEffects.hpp"
 #include "PanelVisibility.hpp"
+#include "WindowLayout.hpp"
 #include "LocalPlayerSide.hpp"
 #include "ActionIdentity.hpp"
 #include "HudText.hpp"
@@ -69,6 +70,13 @@ int g_h = 230;
 // must not silently unfold the panel or reset the chosen language.
 std::atomic<int> g_language{0};            // index of whm::HudLanguage
 std::atomic<bool> g_collapsed{false};
+std::atomic<bool> g_vertical{false};
+std::atomic<bool> g_hidden{false};
+whm::layout::Dock g_dock=whm::layout::Dock::Bottom; // UI thread only after load
+bool g_autoFit=true;
+int g_sideWidth=240,g_freeX=0,g_freeY=0;
+unsigned g_hotkeyModifiers=MOD_CONTROL|MOD_SHIFT;
+int g_toggleKey='H',g_layoutKey='O',g_positionKey='P';
 struct MoveNameEntry { std::array<std::string, 3> names; };
 std::map<std::string, MoveNameEntry> g_moveNames;
 
@@ -95,6 +103,13 @@ void saveHudPreferences() {
         codes[std::clamp(g_language.load(), 0, 2)], ini.c_str());
     WritePrivateProfileStringW(L"HUD", L"Collapsed",
         g_collapsed.load() ? L"1" : L"0", ini.c_str());
+    WritePrivateProfileStringW(L"HUD",L"Vertical",g_vertical?L"1":L"0",ini.c_str());
+    WritePrivateProfileStringW(L"HUD",L"Hidden",g_hidden?L"1":L"0",ini.c_str());
+    const auto dock=std::to_wstring(static_cast<int>(g_dock));
+    const auto x=std::to_wstring(g_freeX),y=std::to_wstring(g_freeY);
+    WritePrivateProfileStringW(L"HUD",L"Dock",dock.c_str(),ini.c_str());
+    WritePrivateProfileStringW(L"HUD",L"FreeX",x.c_str(),ini.c_str());
+    WritePrivateProfileStringW(L"HUD",L"FreeY",y.c_str(),ini.c_str());
 }
 
 // Check that the SokuLib runtime enum values match the portable mapping.
@@ -474,6 +489,61 @@ HWND g_panel = nullptr;
 std::atomic<bool> g_panelWanted{false};
 std::vector<HudRow> g_panelRows;
 std::atomic<int> g_cursorLogicalX{-1}, g_cursorLogicalY{-1};
+whm::window::Geometry g_geometry;
+bool g_dragging=false;
+POINT g_dragMouse{},g_dragWindow{};
+unsigned g_lastPaint=0;
+std::ofstream g_layoutLog;
+void traceLayout(const char *event,whm::layout::Rect r) {
+    if(!g_layoutLog.is_open())g_layoutLog.open(moduleFolder()/L"WindowLayout.log",std::ios::app);
+    if(g_layoutLog)g_layoutLog<<GetTickCount()<<" "<<event<<" "<<r.x<<","<<r.y<<" "<<r.w<<"x"<<r.h<<std::endl;
+}
+void chooseDock(whm::layout::Dock dock) {
+    g_dock=dock;
+    if(dock!=whm::layout::Dock::Free)g_vertical.store(dock!=whm::layout::Dock::Bottom);
+    saveHudPreferences();
+}
+void endDrag() {
+    if(!g_dragging)return;
+    g_dragging=false;ReleaseCapture();
+    auto game=SokuLib::window;RECT wr{};GetWindowRect(g_panel,&wr);
+    const auto snap=whm::window::snapshot(game);
+    const auto base=g_geometry.active()?g_geometry.original().outer:snap.outer;
+    const int right=wr.right,bottom=wr.bottom;
+    if(std::abs(wr.left-(snap.outer.x+snap.outer.w))<32||std::abs(right-(snap.area.x+snap.area.w))<24)
+        chooseDock(whm::layout::Dock::Right);
+    else if(std::abs(right-snap.outer.x)<32||std::abs(wr.left-snap.area.x)<24)
+        chooseDock(whm::layout::Dock::Left);
+    else if(std::abs(wr.top-(snap.outer.y+snap.outer.h))<32||std::abs(bottom-(snap.area.y+snap.area.h))<24)
+        chooseDock(whm::layout::Dock::Bottom);
+    else {g_freeX=wr.left-base.x;g_freeY=wr.top-base.y;chooseDock(whm::layout::Dock::Free);}
+}
+void pollPanelInput() {
+    const HWND game=SokuLib::window;
+    if(g_dragging) {
+        if(!panelOwnsForeground(game)||!(GetAsyncKeyState(VK_LBUTTON)&0x8000)){endDrag();return;}
+        POINT now{};GetCursorPos(&now);
+        SetWindowPos(g_panel,nullptr,g_dragWindow.x+now.x-g_dragMouse.x,g_dragWindow.y+now.y-g_dragMouse.y,
+            0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+    }
+    static bool held[3]{};
+    const int keys[]={g_toggleKey,g_layoutKey,g_positionKey};
+    const bool mods=(!(g_hotkeyModifiers&MOD_CONTROL)||(GetAsyncKeyState(VK_CONTROL)&0x8000))&&
+        (!(g_hotkeyModifiers&MOD_SHIFT)||(GetAsyncKeyState(VK_SHIFT)&0x8000))&&
+        (!(g_hotkeyModifiers&MOD_ALT)||(GetAsyncKeyState(VK_MENU)&0x8000));
+    const bool enabled=game&&panelOwnsForeground(game)&&g_panelWanted.load();
+    for(int n=0;n<3;++n) {
+        const bool down=keys[n]>0&&keys[n]<256&&(GetAsyncKeyState(keys[n])&0x8000);
+        if(enabled&&mods&&down&&!held[n]) {
+            if(n==0){g_hidden.store(!g_hidden.load());if(!g_hidden)g_collapsed.store(false);saveHudPreferences();}
+            if(n==1){if(g_vertical)chooseDock(whm::layout::Dock::Bottom);else chooseDock(whm::layout::Dock::Right);}
+            if(n==2)chooseDock(g_dock==whm::layout::Dock::Bottom?whm::layout::Dock::Left:
+                g_dock==whm::layout::Dock::Left?whm::layout::Dock::Right:whm::layout::Dock::Bottom);
+            g_lastPaint=0;
+        }
+        held[n]=down;
+    }
+}
 
 bool systemCursorVisible() {
     CURSORINFO info{}; info.cbSize = sizeof(info);
@@ -528,6 +598,7 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         // immediately, without the game thread touching any live object.
         view.language=static_cast<whm::HudLanguage>(std::clamp(g_language.load(),0,2));
         view.collapsed=g_collapsed.load();
+        view.vertical=g_vertical.load();
         view.cursorX=g_cursorLogicalX.load();
         view.cursorY=g_cursorLogicalY.load();
         view.systemCursorVisible=systemCursorVisible();
@@ -539,8 +610,8 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         if(cw>0&&chh>0) {
             const int px=static_cast<short>(LOWORD(l));
             const int py=static_cast<short>(HIWORD(l));
-            g_cursorLogicalX.store(px*kPanelVirtualWidth/cw);
-            g_cursorLogicalY.store(py*kPanelVirtualHeight/chh);
+            g_cursorLogicalX.store(px*(g_vertical?400:1000)/cw);
+            g_cursorLogicalY.store(py*(g_vertical?776:290)/chh);
         }
         TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,hwnd,0};
         TrackMouseEvent(&track);
@@ -553,8 +624,7 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         return 0;
     }
     if (msg == WM_LBUTTONUP) {
-        // Actions run on DOWN; nothing is left to do on UP. Not forwarding it
-        // to the owner window also avoids an accidental game activation.
+        endDrag();
         return 0;
     }
     if (msg == WM_LBUTTONDOWN) {
@@ -565,8 +635,9 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         // WM_LBUTTONUP, so waiting for the release made the pad feel dead.
         const int px=static_cast<short>(LOWORD(l));
         const int py=static_cast<short>(HIWORD(l));
-        const int vx=px*kPanelVirtualWidth/cw;
-        const int vy=py*kPanelVirtualHeight/chh;
+        const auto canonical=whm::layout::canonicalPoint(g_vertical,
+            px*(g_vertical?400:1000)/cw,py*(g_vertical?776:290)/chh);
+        const int vx=canonical.first,vy=canonical.second;
         auto inside=[](int x,int y,const HudButton &b){
             return x>=b.x&&x<b.x+b.w&&y>=b.y&&y<b.y+b.h;
         };
@@ -584,7 +655,12 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
                 g_collapsed.store(true); changed=true;
             }
         }
+        if(!changed&&!g_collapsed) {
+            RECT r{};GetWindowRect(hwnd,&r);GetCursorPos(&g_dragMouse);
+            g_dragWindow={r.left,r.top};g_dragging=true;SetCapture(hwnd);
+        }
         if(changed) {
+            g_lastPaint=0;
             saveHudPreferences();
             InvalidateRect(hwnd,nullptr,FALSE);
             UpdateWindow(hwnd);
@@ -606,58 +682,56 @@ void refreshPanel() {
             game, nullptr, g_module, nullptr);
     }
     if (!g_panel) return;
-    // Owned popups can remain above unrelated windows under Wine. Keep the
-    // companion visible only while this game's process owns the foreground.
-    if(!panelOwnsForeground(game)) {
-        ShowWindow(g_panel,SW_HIDE);
-        return;
-    }
+    const unsigned now=GetTickCount();
     const bool battleScene = SokuLib::sceneId == SokuLib::SCENE_BATTLE ||
         SokuLib::sceneId == SokuLib::SCENE_BATTLESV || SokuLib::sceneId == SokuLib::SCENE_BATTLECL;
-    if (IsIconic(game) || !battleScene || !g_panelWanted.load()) { ShowWindow(g_panel, SW_HIDE); return; }
-    // Only while the companion is actually shown: restore a hidden/clipped
-    // cursor so its controls can be seen and clicked.
+    if(IsIconic(game)){ShowWindow(g_panel,SW_HIDE);return;}
+    const auto current=whm::window::snapshot(game);
+    const bool show=battleScene&&g_panelWanted.load()&&!g_hidden.load();
+    const bool reserve=show&&!g_collapsed.load()&&g_autoFit&&g_dock!=whm::layout::Dock::Free;
+    if(!show||g_collapsed.load())g_geometry.restore(game,current,now);
+    if(!show||!panelOwnsForeground(game)) {ShowWindow(g_panel,SW_HIDE);return;}
+    if(g_dragging)return;
+    // Do not alter an exclusive D3D fullscreen window. WindowResizer's
+    // borderless mode is identifiable and keeps rendering windowed.
+    if(!current.supported){ShowWindow(g_panel,SW_HIDE);g_geometry.clear();return;}
     releaseCursorRestrictions();
-    RECT frame; GetWindowRect(game, &frame);
-    RECT work; SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
-    const int gameWidth=frame.right-frame.left, gameHeight=frame.bottom-frame.top;
-    const int panelHeight=std::max(180,gameWidth*kPanelVirtualHeight/kPanelVirtualWidth);
-    const bool folded=g_collapsed.load();
-    // A folded panel reserves NO full-height space and never triggers the
-    // game-window resizing loop. Preference is separate from scene hiding.
-    if(!folded) {
-        if(gameHeight+panelHeight>work.bottom-work.top) {
-            const double scale=double(work.bottom-work.top-16)/(gameHeight+panelHeight);
-            int newWidth=static_cast<int>(gameWidth*scale),newHeight=static_cast<int>(gameHeight*scale);
-            SetWindowPos(game,nullptr,std::max<LONG>(work.left,frame.left),work.top,newWidth,newHeight,
-                SWP_NOACTIVATE|SWP_NOZORDER|SWP_ASYNCWINDOWPOS);
-            return;
-        }
-        if(frame.bottom+panelHeight>work.bottom) {
-            SetWindowPos(game,nullptr,frame.left,work.bottom-panelHeight-gameHeight,0,0,
-                SWP_NOSIZE|SWP_NOACTIVATE|SWP_NOZORDER|SWP_ASYNCWINDOWPOS);
-            return;
-        }
+    if(!g_collapsed)g_geometry.synchronize(current,now);
+    const auto base=g_geometry.active()?g_geometry.original():current;
+    whm::layout::Input input;
+    input.original=base.outer;input.borders=current.borders;
+    input.area=base.fullscreen?current.monitor:current.area;
+    input.dock=g_dock;input.vertical=g_vertical;input.autoFit=reserve&&!g_geometry.blocked();
+    input.fullscreen=base.fullscreen;input.sideWidth=g_sideWidth;
+    input.freeX=g_freeX;input.freeY=g_freeY;
+    auto planned=whm::layout::plan(input);
+    if(g_geometry.pending()) {
+        // No second resize while the first one is queued on the game thread.
+        ShowWindow(g_panel,SW_HIDE);return;
     }
-    size_t rowCount;
-    { std::lock_guard<std::mutex> guard(g_panelMutex); rowCount = g_panelRows.size(); }
-    if(folded) {
-        // "small" is a legacy Windows macro (small -> char); never use it as
-        // an identifier here. Keep the "+" inside the work area.
-        const int plusSize=std::max(24,gameWidth*kPlusLogicalSize/kPanelVirtualWidth);
-        const int plusY=std::min(frame.bottom+4,work.bottom-plusSize-2);
-        SetWindowPos(g_panel, HWND_NOTOPMOST,
-            frame.right-plusSize-6, plusY, plusSize, plusSize,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    } else {
-        SetWindowPos(g_panel, HWND_NOTOPMOST, frame.left, frame.bottom, gameWidth,
-            std::max<LONG>(180, gameWidth*kPanelVirtualHeight/kPanelVirtualWidth),
-            SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    if(reserve&&!g_geometry.blocked()) {
+        if(g_geometry.apply(game,current.outer,planned.game,now)) {
+            traceLayout("reserve",planned.game);ShowWindow(g_panel,SW_HIDE);return;
+        }
+    } else if(!g_collapsed&&g_geometry.active()) {
+        g_geometry.restore(game,current,now);
+        if(g_geometry.pending()){ShowWindow(g_panel,SW_HIDE);return;}
     }
-    InvalidateRect(g_panel, nullptr, FALSE);
-    // The game render thread does not pump a standard Win32 message loop.
-    // Deliver WM_PAINT synchronously instead of leaving it queued forever.
-    UpdateWindow(g_panel);
+    if(g_geometry.blocked()) {
+        input.original=current.outer;input.autoFit=false;
+        planned=whm::layout::plan(input);
+    }
+    auto panel=planned.panel;
+    if(g_collapsed) {
+        const int size=std::clamp(panel.w*28/(g_vertical?400:1000),18,42);
+        panel={panel.x+panel.w-size,panel.y,size,size};
+        panel=whm::layout::clampPosition(panel,input.area);
+    }
+    // Follow the owner's topmost status only while the game is foreground;
+    // WindowResizer's separate black-bars window is topmost in fullscreen.
+    HWND z=(GetWindowLongW(game,GWL_EXSTYLE)&WS_EX_TOPMOST)?HWND_TOPMOST:HWND_NOTOPMOST;
+    SetWindowPos(g_panel,z,panel.x,panel.y,panel.w,panel.h,SWP_NOACTIVATE|SWP_SHOWWINDOW);
+    InvalidateRect(g_panel,nullptr,FALSE);UpdateWindow(g_panel);
 }
 
 DWORD WINAPI panelThread(void *) {
@@ -678,10 +752,14 @@ DWORD WINAPI panelThread(void *) {
     } catch(const std::exception &) {
         OutputDebugStringA("SokuMaxDamageHUD: icon extraction failed; using fallback icons.\n");
     }
-    SetTimer(nullptr, 0, 100, nullptr);
+    SetTimer(nullptr, 0, 20, nullptr);
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (msg.message == WM_TIMER) refreshPanel();
+        if (msg.message == WM_TIMER) {
+            pollPanelInput();
+            const unsigned tick=GetTickCount();
+            if(!g_lastPaint||tick-g_lastPaint>=100){g_lastPaint=tick;refreshPanel();}
+        }
         TranslateMessage(&msg); DispatchMessageW(&msg);
     }
     return 0;
@@ -857,6 +935,18 @@ void loadSettings() {
     const std::wstring chosen(language);
     g_language.store(chosen == L"JP" ? 1 : chosen == L"EN" ? 2 : 0);
     g_collapsed.store(GetPrivateProfileIntW(L"HUD", L"Collapsed", 0, ini.c_str()) != 0);
+    g_hidden.store(GetPrivateProfileIntW(L"HUD",L"Hidden",0,ini.c_str())!=0);
+    g_vertical.store(GetPrivateProfileIntW(L"HUD",L"Vertical",0,ini.c_str())!=0);
+    g_dock=static_cast<whm::layout::Dock>(std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"Dock",0,ini.c_str()),0,3));
+    if(g_dock!=whm::layout::Dock::Free)g_vertical.store(g_dock!=whm::layout::Dock::Bottom);
+    g_autoFit=GetPrivateProfileIntW(L"HUD",L"AutoFit",1,ini.c_str())!=0;
+    g_sideWidth=std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"SideWidth",240,ini.c_str()),120,600);
+    g_freeX=static_cast<int>(GetPrivateProfileIntW(L"HUD",L"FreeX",0,ini.c_str()));
+    g_freeY=static_cast<int>(GetPrivateProfileIntW(L"HUD",L"FreeY",0,ini.c_str()));
+    g_hotkeyModifiers=GetPrivateProfileIntW(L"Hotkeys",L"Modifiers",6,ini.c_str());
+    g_toggleKey=GetPrivateProfileIntW(L"Hotkeys",L"Toggle",'H',ini.c_str());
+    g_layoutKey=GetPrivateProfileIntW(L"Hotkeys",L"Layout",'O',ini.c_str());
+    g_positionKey=GetPrivateProfileIntW(L"Hotkeys",L"Position",'P',ini.c_str());
     // 1602 sourced rows: character, card, notation, zh-CN, en, ja, source.
     // Index 0/1/2 of names follows HudLanguage (Chinese/Japanese/English).
     std::ifstream names(folder/L"MoveNames.tsv");

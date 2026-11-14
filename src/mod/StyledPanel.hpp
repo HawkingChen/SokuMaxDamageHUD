@@ -6,6 +6,7 @@
 #include "HudPalette.hpp"
 #include "HudText.hpp"
 #include "FirstHit.hpp"
+#include "PanelLayout.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -54,6 +55,7 @@ struct PanelView {
     bool weatherSealed = false;
     whm::HudLanguage language = whm::HudLanguage::Chinese;
     bool collapsed = false;
+    bool vertical = false;
     int cursorX = -1, cursorY = -1;
     bool systemCursorVisible = true;
     std::vector<PanelEffect> effects;
@@ -164,10 +166,12 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
     HDC target = BeginPaint(window, &ps);
     RECT bounds{};
     GetClientRect(window, &bounds);
-    const int width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
-    if (width <= 0 || height <= 0) { EndPaint(window, &ps); return; }
+    const int actualWidth = bounds.right - bounds.left, actualHeight = bounds.bottom - bounds.top;
+    const int width=v.vertical?kPanelVirtualWidth:actualWidth;
+    const int height=v.vertical?kPanelVirtualHeight:actualHeight;
+    if (actualWidth <= 0 || actualHeight <= 0) { EndPaint(window, &ps); return; }
     if (v.collapsed) {
-        paintFoldedPanel(window, target, width, height);
+        paintFoldedPanel(window, target, actualWidth, actualHeight);
         EndPaint(window, &ps);
         return;
     }
@@ -540,7 +544,7 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
     button(kHudButtons[3],L"↑",false);
     // Fallback arrow for sessions where the game keeps the system cursor
     // hidden. It is only drawn when the real cursor is not showing.
-    if(!v.systemCursorVisible&&v.cursorX>=0&&v.cursorY>=0) {
+    if(!v.vertical&&!v.systemCursorVisible&&v.cursorX>=0&&v.cursorY>=0) {
         auto arrow=[&](int dx,int dy,COLORREF color) {
             POINT a[]{{v.cursorX+dx,v.cursorY+dy},
                       {v.cursorX+dx,v.cursorY+dy+17},
@@ -555,7 +559,40 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
         arrow(0,0,RGB(255,246,225));
     }
     SetMapMode(dc,MM_TEXT);
-    BitBlt(target,0,0,width,height,dc,0,0,SRCCOPY);
+    if(v.vertical) {
+        HDC portrait=CreateCompatibleDC(target);
+        HBITMAP image=CreateCompatibleBitmap(target,whm::layout::verticalWidth,whm::layout::verticalHeight);
+        if(portrait&&image) {
+            auto oldImage=SelectObject(portrait,image);
+            RECT full{0,0,whm::layout::verticalWidth,whm::layout::verticalHeight};
+            HBRUSH bg=CreateSolidBrush(RGB(21,18,36));FillRect(portrait,&full,bg);DeleteObject(bg);
+            for(auto tile:whm::layout::verticalTiles)
+                BitBlt(portrait,tile.x,tile.y,tile.source.w,tile.source.h,dc,tile.source.x,tile.source.y,SRCCOPY);
+            HPEN border=CreatePen(PS_SOLID,2,RGB(103,78,130));
+            auto oldPen=SelectObject(portrait,border);auto oldBrush=SelectObject(portrait,GetStockObject(NULL_BRUSH));
+            RoundRect(portrait,216,106,396,386,8,8);RoundRect(portrait,1,1,399,775,10,10);
+            SelectObject(portrait,oldBrush);SelectObject(portrait,oldPen);DeleteObject(border);
+            HFONT font=CreateFontW(-13,0,0,0,FW_BOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,
+                OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,whm::uiFontFamily(lang));
+            auto oldFont=SelectObject(portrait,font);SetBkMode(portrait,TRANSPARENT);SetTextColor(portrait,cream);
+            RECT title{12,2,390,25};DrawTextW(portrait,L"⋮⋮  SokuMaxDamageHUD",-1,&title,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+            for(size_t n=0;n<std::min<size_t>(5,v.hand.size());++n) {
+                auto tile=whm::layout::handTile(static_cast<int>(n));
+                BitBlt(portrait,tile.x,tile.y,tile.source.w,tile.source.h,dc,tile.source.x,tile.source.y,SRCCOPY);
+            }
+            if(v.hand.empty()) {RECT empty{224,172,388,246};DrawTextW(portrait,localized(whm::HudTextKey::NoHand).c_str(),-1,&empty,DT_CENTER|DT_WORDBREAK);}
+            SelectObject(portrait,oldFont);DeleteObject(font);
+            if(!v.systemCursorVisible&&v.cursorX>=0&&v.cursorY>=0) {
+                POINT arrow[]{{v.cursorX,v.cursorY},{v.cursorX,v.cursorY+19},{v.cursorX+5,v.cursorY+14},{v.cursorX+12,v.cursorY+13}};
+                auto brush=CreateSolidBrush(RGB(255,246,225));auto old=SelectObject(portrait,brush);
+                Polygon(portrait,arrow,4);SelectObject(portrait,old);DeleteObject(brush);
+            }
+            SetStretchBltMode(target,HALFTONE);
+            StretchBlt(target,0,0,actualWidth,actualHeight,portrait,0,0,400,776,SRCCOPY);
+            SelectObject(portrait,oldImage);
+        }
+        if(image)DeleteObject(image);if(portrait)DeleteDC(portrait);
+    } else BitBlt(target,0,0,width,height,dc,0,0,SRCCOPY);
     SelectObject(dc,previous);
     DeleteObject(buffer);
     DeleteDC(dc);
