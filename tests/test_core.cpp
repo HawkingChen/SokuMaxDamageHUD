@@ -180,7 +180,8 @@ static void testSpellFollowupAttribution() {
     assert(oldCast.valid()&&oldCast.action==608);
     ProjectileContact secondBullet{2,0,1,0,1,0,true,true};
     const auto newer=ambiguous.observe(activation,cinematic,{firstBullet},{firstBullet,secondBullet});
-    assert(newer.valid()&&newer.action==609);
+    // Two competing active attack sources: no attribution yet.
+    assert(!newer.valid());
     auto hitOld=firstBullet;hitOld.collision=1;hitOld.limit=0;
     auto hitNew=secondBullet;hitNew.collision=1;hitNew.limit=0;
     assert(!ambiguous.observe(cinematic,cinematic,
