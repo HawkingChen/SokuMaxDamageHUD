@@ -4,10 +4,17 @@ namespace whm {
 void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; }
 void RecordTracker::commit() { if (active_.damage > best_.damage) best_ = active_; active_ = {}; }
 void RecordTracker::finish() { commit(); }
-void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint64_t instance) {
+void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint64_t instance,
+                                  bool mixedSources) {
     if(frame<lastFrame_)casts_.clear(); // new round, preserve match best
     lastFrame_=frame;
     if(damage<=0)return;
+    if(mixedSources) {
+        // E.g. delayed 5C + j6A: 3057 is their combined damage, not a 3057
+        // j6A nor a single 3057 "UNKNOWN MOVE". Preserve the last real best.
+        unattributedDamage_+=damage;
+        return;
+    }
     if(action<300||action>=690||!instance) {
         unattributedDamage_+=damage;
         if(damage>best_.damage)best_={damage,-1,false,false};
