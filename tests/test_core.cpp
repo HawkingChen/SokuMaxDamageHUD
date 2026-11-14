@@ -9,6 +9,7 @@
 #include <cfenv>
 #include "FirstHit.hpp"
 #include "MeilingTiger.hpp"
+#include "SuikaGiant.hpp"
 #include "HitAttribution.hpp"
 #include <cassert>
 #include <cmath>
@@ -269,6 +270,35 @@ int main() {
     assert(!weatherLabelVisible(21, false, 1., 1.)); // no weather
     assert(!weatherLabelVisible(4, true, 1.25, 1.));  // sealed
     assert(weatherLabelVisible(7, false, 1.1, 1.));   // unexplained effective buff
+
+    // SokuLib CharacterManager +0x892: only Suika's active 0..480f MPP
+    // transformation may switch the strongest panel into basic attacks.
+    static_assert(suikaMPPActive(9,480));
+    static_assert(suikaMPPActive(9,1));
+    static_assert(!suikaMPPActive(9,0));
+    static_assert(!suikaMPPActive(9,481));
+    static_assert(!suikaMPPActive(0,480));
+    static_assert(kSuikaGiantMoves.size()==10);
+    const auto mpp=strongestSuikaGiantMove(1.);
+    assert(mpp.move && std::string(mpp.move->notation)=="MPP JA");
+    assert(mpp.damage==2500);
+    assert(strongestSuikaGiantMove(1.4).damage==3500);
+    assert(strongestSuikaGiantMove(1.25).damage==3125); // Drizzle
+    assert(!strongestSuikaGiantMove(0).move);
+    // MPP C's 500-damage shots and 2A/B/C repeated shocks have no
+    // verified all-hit totals: rank only the published first contact.
+    for(const auto &move:kSuikaGiantMoves) {
+        if(std::string(move.notation)=="MPP C") {
+            assert(move.multihitIncomplete && move.neutralDamage==2000);
+        }
+        if(std::string(move.notation)=="MPP 2A/B/C") {
+            assert(move.multihitIncomplete && move.neutralDamage==500);
+        }
+    }
+    assert(std::string(hudText(HudTextKey::StrongestNormal,HudLanguage::Chinese))==
+           "最痛普通技");
+    assert(std::string(hudText(HudTextKey::Strongest,HudLanguage::Chinese))==
+           "最痛必杀技");
 
     // Meiling (character 17): Tiger is a one-hit melee CH modifier,
     // not attackPower, not a blanket special-move multiplier.
