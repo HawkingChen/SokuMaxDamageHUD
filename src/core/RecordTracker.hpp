@@ -19,7 +19,10 @@ class RecordTracker {
 public:
     void reset();
     void observe(int beforeHP, int afterHP, int attackAction, unsigned frame);
-    void observeDamage(int damage, int action, unsigned frame, std::uint64_t instance);
+    // mixedSources: the frame's delta may include multiple independent moves.
+    // Do not rank that aggregate as a single move, even as UNKNOWN MOVE.
+    void observeDamage(int damage, int action, unsigned frame, std::uint64_t instance,
+                       bool mixedSources = false);
     void finish();
     const ActualRecord &best() const { return best_; }
     int unattributedDamage() const { return unattributedDamage_; }
