@@ -231,8 +231,8 @@ int main() {
     // the first hit, not the rest of a multi-hit move (or unknown shots).
     OpeningCounterCatalog open;
     std::istringstream chData(
-        "17|105|623B|-1|1430|https://example.org/meiling\\n"
-        "4|109|421B|-1|1320|https://example.org/emerald\\n");
+        "17|105|623B|-1|1430|https://example.org/meiling\n"
+        "4|109|421B|-1|1320|https://example.org/emerald\n");
     assert(open.read(chData)&&open.size()==2);
     assert(open.firstHit(17,105,"623B",4)==1430);
     assert(open.firstHit(4,109,"421B",0)==1320);
