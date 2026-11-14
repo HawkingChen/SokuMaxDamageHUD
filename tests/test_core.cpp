@@ -188,9 +188,15 @@ static void testDelayedBirthAndDormantProjectileSafety() {
     // the exact frame j6A hits. The previous code silently ranked all
     // observed damage as the j6A alone; a *latent* 5C source must veto that.
     HitAttribution persistent;
-    const auto cast=persistent.observe(shoot,shoot,{}, {dormant});
-    assert(cast.valid()&&cast.action==410);
+    // Birth without contact is not a damage event; the object retains
+    // its 5C creation identity internally until an actual hit occurs.
+    assert(!persistent.observe(shoot,shoot,{}, {dormant}).valid());
     persistent.observe(shoot,idle,{dormant},{dormant});
+    auto active5C=dormant;
+    active5C.hitBoxes=true;active5C.limit=2;active5C.collision=1;
+    const auto cast=persistent.observe(idle,idle,{dormant},{active5C});
+    assert(cast.valid()&&cast.action==410);
+    persistent.observe(idle,idle,{active5C},{dormant});
     const auto mixed=persistent.observeDetailed(idle,jump,{dormant},{dormant});
     assert(mixed.mixed&&!mixed.origin.valid());
     assert(mixed.liveProjectiles==1&&mixed.unownedOrigins==0);
