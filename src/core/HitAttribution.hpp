@@ -28,8 +28,15 @@ struct ProjectileContact {
 // its owner walks, attacks again, or returns to idle. Handle generation avoids
 // confusing a recycled game-object address with the previous projectile.
 class HitAttribution {
-    struct Tracked { ProjectileContact sample; AttackOrigin origin; };
+    struct Tracked { ProjectileContact sample; AttackOrigin origin; std::uint64_t tick = 0; };
     std::map<std::uintptr_t,Tracked> objects_;
+    // Some sustained spells create the next child on the frame where its
+    // parent emitter vanishes. Keep a *short-lived parent tombstone* for
+    // explicitly linked children; never assign an unrelated owner bullet
+    // merely because the fighter was casting a spell seconds earlier.
+    std::map<std::uintptr_t,Tracked> endedParents_;
+    std::uint64_t tick_ = 0;
+    static constexpr std::uint64_t kParentGraceFrames = 90;
     ActorContact previousActor_{};
     AttackOrigin actorOrigin_{};
     std::uint64_t serial_ = 0;
@@ -49,22 +56,34 @@ class HitAttribution {
         return actorOrigin_;
     }
     AttackOrigin born(const ProjectileContact &s,AttackOrigin casting) const {
-        const auto parent=objects_.find(s.parent);
-        return parent!=objects_.end()&&parent->second.origin.valid()?
-            parent->second.origin:casting;
+        if(s.parent) {
+            const auto live=objects_.find(s.parent);
+            if(live!=objects_.end()&&live->second.origin.valid())return live->second.origin;
+            const auto ended=endedParents_.find(s.parent);
+            if(ended!=endedParents_.end() &&
+               tick_-ended->second.tick<=kParentGraceFrames &&
+               ended->second.origin.valid())return ended->second.origin;
+        }
+        return casting;
     }
 public:
-    void reset() { objects_.clear();previousActor_={};actorOrigin_={};serial_=0; }
+    void reset() { objects_.clear();endedParents_.clear();previousActor_={};actorOrigin_={};serial_=0;tick_=0; }
     AttackOrigin observe(const ActorContact &before,const ActorContact &after,
                          const std::vector<ProjectileContact> &pre,
                          const std::vector<ProjectileContact> &post) {
+        ++tick_;
+        for(auto it=endedParents_.begin();it!=endedParents_.end();) {
+            if(tick_-it->second.tick>kParentGraceFrames)it=endedParents_.erase(it);
+            else ++it;
+        }
         const auto beforeOrigin=actor(before);
         for(const auto &s:pre) {
             if(!s.owned)continue;
             auto it=objects_.find(s.id);
             if(it==objects_.end()||it->second.sample.generation!=s.generation)
-                objects_[s.id]={s,born(s,beforeOrigin)};
-            else it->second.sample=s;
+                objects_[s.id]={s,born(s,beforeOrigin),tick_};
+            else {it->second.sample=s;it->second.tick=tick_;}
+            endedParents_.erase(s.id); // address reused by a live object
         }
         const auto afterOrigin=actor(after);
         const auto casting=beforeOrigin.valid()?beforeOrigin:afterOrigin;
@@ -92,7 +111,15 @@ public:
                 if(origin.valid())add(hits,origin);else unknownHit=true;
             }
             if(s.hitBoxes&&s.limit>0)add(possible,origin);
-            next[s.id]={s,origin};
+            next[s.id]={s,origin,tick_};
+            endedParents_.erase(s.id);
+        }
+        // Save only known emitters that *actually disappear*. A child can
+        // still identify their cast from parentObject for a short interval
+        // even after the parent was removed by the engine.
+        for(const auto &[id,parent]:objects_) {
+            if(next.find(id)==next.end()&&parent.origin.valid())
+                endedParents_[id]={parent.sample,parent.origin,tick_};
         }
         objects_=std::move(next);
         if(unknownHit||hits.size()>1)return {};
