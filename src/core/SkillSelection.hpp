@@ -25,6 +25,20 @@ inline int activeSkillLevel(int character, int card, bool notUsed,
         return -1;
     return effective;
 }
+// A learned skill variant can still have level-gated input branches.
+// Add exceptions ONLY after finding original-1.10a evidence; an unknown
+// command remains usable unless the source proves otherwise.
+inline bool skillCommandAvailableAtLevel(int character,int card,
+                                         const std::string &notation,int level) {
+    if(level<0||level>4)return false;
+    const std::string cmd=notation;
+    // Meiling 降華蹴 j.214B/C becomes usable at skill Lv2.
+    // https://wikiwiki.jp/tenshi/【非想天則】キャラ対策　美鈴
+    if(character==17&&card==108&&cmd.size()>0 && (cmd[0]=='J'||cmd[0]=='j'))
+        return level>=2;
+    return true;
+}
+
 // Resolve a *specific* air/ground B/C command to its action ID so that
 // level-specific, manually VERIFIED MoveProfiles can be used if available.
 // Stage 0/1 are ground B/C; 2/3 are j.B/C, per SokuLib ActionIdentity.
