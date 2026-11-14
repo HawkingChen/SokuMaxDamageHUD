@@ -18,6 +18,12 @@ struct AttackOrigin {
 struct HitAttributionResult {
     AttackOrigin origin{};
     bool mixed = false;
+    // Diagnostic-only evidence counts. A collider cannot prove the whole
+    // frame belonged to it when a different delayed projectile is live.
+    unsigned detectedContacts = 0;
+    unsigned plausibleOrigins = 0;
+    unsigned liveProjectiles = 0;
+    unsigned unownedOrigins = 0;
 };
 struct ActorContact {
     int action = 0, sequence = 0;
@@ -81,7 +87,15 @@ class HitAttribution {
             if(ended!=endedParents_.end() &&
                tick_-ended->second.tick<=kParentGraceFrames &&
                ended->second.origin.valid())return ended->second.origin;
+            // An unresolved parent cannot be replaced with whichever action
+            // the owner happens to be executing when the child materializes.
+            return {};
         }
+        // A delayed 5C projectile may spawn AFTER Suika has changed to j6A.
+        // A newly seen bullet while its owner executes an A/melee normal
+        // cannot be credited to that normal merely because it was current.
+        // Shooting normals (400+) and specials may legitimately create it.
+        if(casting.action<400)return {};
         return casting;
     }
 public:
@@ -105,8 +119,10 @@ public:
         }
         const auto afterOrigin=actor(after);
         const auto casting=beforeOrigin.valid()?beforeOrigin:afterOrigin;
-        std::vector<AttackOrigin> hits,possible;
+        std::vector<AttackOrigin> hits,possible,latent;
         bool unknownHit=false;
+        bool unresolvedProjectile=false;
+        unsigned liveProjectileCount=0,unresolvedCount=0;
         auto add=[&](std::vector<AttackOrigin> &v,AttackOrigin origin) {
             if(!origin.valid())return;
             for(auto old:v)if(old==origin)return;
@@ -126,8 +142,17 @@ public:
                 afterOrigin.valid()&&afterOrigin!=beforeOrigin;
             add(hits,newActivation?afterOrigin:casting);
         }
-        for(const auto &[id,t]:objects_)
-            if(t.sample.owned&&t.sample.hitBoxes&&t.sample.limit>0)add(possible,t.origin);
+        // Keep ALL currently live known bullets as latent candidates, even
+        // if their immediate hit-box is not up this precise frame. Delayed
+        // 5C must not be ignored just because j6A is the only contact that
+        // changed its collision flag.
+        for(const auto &[id,t]:objects_) {
+            if(!t.sample.owned)continue;
+            ++liveProjectileCount;
+            if(t.origin.valid())add(latent,t.origin);
+            else {unresolvedProjectile=true;++unresolvedCount;}
+            if(t.sample.hitBoxes&&t.sample.limit>0)add(possible,t.origin);
+        }
         std::map<std::uintptr_t,Tracked> next;
         for(const auto &s:post) {
             if(!s.owned)continue;
@@ -137,6 +162,14 @@ public:
             const ProjectileContact prior=known?it->second.sample:ProjectileContact{};
             if(contact(s.collision,prior.collision,s.limit,prior.limit,s.hitStop,prior.hitStop)) {
                 if(origin.valid())add(hits,origin);else unknownHit=true;
+            }
+            if(!known) {
+                // New post-frame objects are also evidence of possible
+                // overlapping damage, regardless of whether their first
+                // collision bit has changed yet.
+                ++liveProjectileCount;
+                if(origin.valid())add(latent,origin);
+                else {unresolvedProjectile=true;++unresolvedCount;}
             }
             if(s.hitBoxes&&s.limit>0)add(possible,origin);
             next[s.id]={s,origin,tick_};
@@ -150,35 +183,42 @@ public:
                 endedParents_[id]={parent.sample,parent.origin,tick_};
         }
         objects_=std::move(next);
-        if(unknownHit || hits.size()>1)return {{},true};
+        HitAttributionResult decision;
+        decision.detectedContacts=static_cast<unsigned>(hits.size());
+        decision.plausibleOrigins=static_cast<unsigned>(possible.size());
+        decision.liveProjectiles=liveProjectileCount;
+        decision.unownedOrigins=unresolvedCount;
+        if(unknownHit || hits.size()>1) {decision.mixed=true;return decision;}
         if(hits.size()==1) {
-            // CRITICAL: the sole *detected* contact is not necessarily the
-            // sole source of total damage. Suika's delayed 5C (410) may have
-            // an unresolved active hitbox while j6A (307) reports its hit.
-            // Their combined 3057 must NEVER be credited to j6A alone.
+            // A sole detected body contact cannot own the whole HP decrease
+            // if another live projectile might deal a delayed hit.
+            // Also fail closed for new bullets whose source cannot be
+            // established, rather than silently relabeling them as j6A.
+            if(unresolvedProjectile){decision.mixed=true;return decision;}
             for(const auto &candidate:possible)
-                if(candidate!=hits.front())return {{},true};
-            return {hits.front(),false};
+                if(candidate!=hits.front()){decision.mixed=true;return decision;}
+            for(const auto &candidate:latent)
+                if(candidate!=hits.front()){decision.mixed=true;return decision;}
+            decision.origin=hits.front();return decision;
         }
-        // Some projectiles disappear in the same update as their last hit.
-        // Use the sole evidenced active cast; never choose between two casts.
-        if(possible.size()==1)return {possible.front(),false};
-        if(!possible.empty())return {{},true};
-        // Scripted SC follow-up animations (650..669) can deal damage even
-        // without an ordinary contact box transition. When no other owned
-        // attacker has an available collision source, keep the same cast.
-        // This is *only* an ALT_EFFECT stage, never a blanket "last card"
-        // fallback for idle frames or independent projectiles.
+        // Without a detected hit, only use an unambiguous, active hit box.
+        // A latent object is insufficient evidence on its own.
+        if(unresolvedProjectile && (possible.size()>0 || !latent.empty())) {
+            decision.mixed=true;return decision;
+        }
+        if(possible.size()==1){decision.origin=possible.front();return decision;}
+        if(!possible.empty()){decision.mixed=true;return decision;}
+        // A scripted ALT_EFFECT attack can legitimately lack an ordinary
+        // collision transition; preserve its own cast in that narrow case.
         if(isSpellFollowupAction(after.action) && afterOrigin.valid() &&
-           afterOrigin.action==canonicalAttackAction(after.action))
-            return {afterOrigin,false};
-        // Final cinematic strike may coincide with 659 -> idle. Only
-        // attribute the frame's hit to the still-active preceding SC
-        // ALT_EFFECT; no long-lasting "recently used SC" fallback.
+           afterOrigin.action==canonicalAttackAction(after.action)) {
+            decision.origin=afterOrigin;return decision;
+        }
         if(isSpellFollowupAction(before.action) && beforeOrigin.valid() &&
-           beforeOrigin.action==canonicalAttackAction(before.action))
-            return {beforeOrigin,false};
-        return {};
+           beforeOrigin.action==canonicalAttackAction(before.action)) {
+            decision.origin=beforeOrigin;return decision;
+        }
+        return decision;
     }
     AttackOrigin observe(const ActorContact &before,const ActorContact &after,
                          const std::vector<ProjectileContact> &pre,
