@@ -2,7 +2,7 @@
 
 [简体中文](README.md) · **English** · [日本語](README.ja.md)
 
-A damage reference HUD for **Touhou Hisoutensoku v1.10a**. A companion panel below the game shows estimated move damage, active modifiers and the best recorded hit. Chinese, Japanese and English interfaces are available.
+A damage reference HUD for **Touhou Hisoutensoku v1.10a**. A companion panel below or to either side of the game shows estimated move damage, active modifiers and the best recorded hit. Chinese, Japanese and English interfaces are available.
 
 **Battle data is read-only.** The mod reads runtime battle state for estimates and display. It does not change actual damage, character stats or battle state, modify network packets, interfere with the random number generator (RNG), or send gameplay inputs. Image extraction leaves the original game archives untouched; generated images and UI preferences are stored in the mod’s own folder.
 
@@ -13,6 +13,15 @@ A damage reference HUD for **Touhou Hisoutensoku v1.10a**. A companion panel bel
 ![HUD detail: damage modifiers, best hit and current hand](docs/hud-youmu.png)
 
 *HUD detail*
+
+
+### Display layouts
+
+The HUD supports **bottom horizontal**, **left portrait**, and **right portrait** docking in both windowed mode and **WindowResizer borderless fullscreen** (exclusive fullscreen is not supported). Use the panel's **direction buttons**, or **drag the HUD with the mouse** toward the bottom, left, or right edge of the game: a translucent preview shows where it will snap on release. No keyboard shortcut is required.
+
+![Right portrait sidebar alongside a windowed game](docs/hud-sidebar-fullscreen.webp)
+
+*In-game screenshot of the right sidebar; switch among bottom, left and right with buttons or drag-and-drop.*
 
 ## Install
 
