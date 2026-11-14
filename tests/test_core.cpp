@@ -172,6 +172,13 @@ static void testSpellFollowupAttribution() {
     source.observe(recast,idle,{},{});
     assert(!source.observe(idle,idle,{},{}).valid());
 
+    // One final cinematic hit may occur during 659 -> idle.
+    HitAttribution exitStage;
+    const auto exitCast=exitStage.observe(idle,activation,{},{});
+    exitStage.observe(activation,cinematic,{},{});
+    assert(exitStage.observe(cinematic,idle,{},{})==exitCast);
+    assert(!exitStage.observe(idle,idle,{},{}).valid());
+
     // Do not invent attribution from an idle fighter or ambiguous hits.
     HitAttribution ambiguous;
     ActorContact otherCast=activation;otherCast.action=608;
