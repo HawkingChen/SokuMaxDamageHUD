@@ -91,3 +91,26 @@ It contributes 968 observed damage events and exercises 110 additional rows.
 Across both sweeps, 1,665 of the 1,958 rows produced damage. The remaining
 293 rows need scenario review; 60 of those have positive source damage.
 They must not be described as verified. Both fixtures are checked in CI.
+
+## Prediction and rollback
+
+Native damage callbacks can run again after a prediction is discarded. A raw
+hit log is therefore not a committed timeline. Giuroll 0.6.18's public
+[`addRollbackCb` interface](https://github.com/Hagb/giuroll-hagb/blob/53535bd/src/lib.rs)
+saves and restores this MOD's record tracker, attribution graph, actor/cast
+state, helper commands, pending event buffer and consumed cursor. No changes
+are made to Giuroll or game combat values.
+
+Pending events are included because checkpoints may occur inside an outer
+battle-process call. The processed core is shared between snapshots within
+that call. Published attribution nodes are immutable between batches, so
+future replayed births cannot mutate an older checkpoint. Restoring outside
+the capture scope also resets HP corroboration to the restored game's HP.
+UI preferences and graphics resources are not rolled back.
+
+Regressions cover discarded Cirno 5C events (2601 inflated versus 1413 on
+the final event sequence), Reisen's repeated 368-point event (1900 versus
+1532), and Remilia's repeated 965-point J2A (1930 versus 965). Identical
+legitimate hits and practice auto-heal still accumulate: there is no global
+blacklist of hit signatures or static damage ceiling. Windows fixtures also
+exercise the four-function cdecl ABI and pending/consumed event restoration.

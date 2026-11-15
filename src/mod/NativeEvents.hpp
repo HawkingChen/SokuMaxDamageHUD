@@ -1,5 +1,6 @@
 #pragma once
 #include <windows.h>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -12,7 +13,8 @@ inline whm::NativeCast ghostPending[2]{},ghostBound[2]{};
 inline const void *ghostObjects[2]{};
 inline unsigned ghostGenerations[2]{};
 inline std::array<Event,4096> events{};
-inline unsigned count=0,dropped=0,frame=0;
+inline unsigned count=0,consumed=0,dropped=0,frame=0;
+inline const unsigned *logicClock=nullptr;
 inline const void *players[2]{};
 inline bool active=false,installed=false;
 inline DWORD gameThread=0;
@@ -40,14 +42,40 @@ template<unsigned I> inline void __fastcall objectUpdate(void *self,void*) {
  originalUpdates[I](self);
  if constexpr(I==5)endGhostCommand(self);
 }
-inline void append(Event e) noexcept {if(count<events.size())events[count++]=e;else ++dropped;}
+inline void append(Event e) noexcept {e.logicFrame=logicClock?read<unsigned>(logicClock,0):frame;if(count<events.size())events[count++]=e;else ++dropped;}
 inline void clearGhostCommands() {
  for(unsigned side=0;side<2;++side){ghostPending[side]={};ghostBound[side]={};ghostObjects[side]=nullptr;ghostGenerations[side]=0;}
 }
 inline void begin(unsigned f,const void *left,const void *right) noexcept {
  if(players[0]!=left || players[1]!=right){actors.reset();clearGhostCommands();}
- count=0;dropped=0;frame=f;players[0]=left;players[1]=right;
+ count=0;consumed=0;dropped=0;frame=f;players[0]=left;players[1]=right;
  gameThread=GetCurrentThreadId();active=installed;
+}
+// Callback checkpoints may be taken in the middle of the outer battle
+// process. Preserve pending events AND their consumed cursor, not just totals.
+struct Snapshot {
+ whm::NativeActors actorState;
+ std::array<whm::NativeCast,2> pending,bound;
+ std::array<const void*,2> objects,playerPointers;
+ std::array<unsigned,2> generations;
+ std::vector<Event> pendingEvents;
+ unsigned cursor=0,discarded=0,phaseFrame=0;
+};
+inline Snapshot snapshot() {
+ Snapshot s;s.actorState=actors;
+ for(unsigned i=0;i<2;++i){s.pending[i]=ghostPending[i];s.bound[i]=ghostBound[i];s.objects[i]=ghostObjects[i];s.playerPointers[i]=players[i];s.generations[i]=ghostGenerations[i];}
+ s.pendingEvents.assign(events.begin(),events.begin()+count);
+ s.cursor=consumed;s.discarded=dropped;s.phaseFrame=frame;return s;
+}
+inline bool restore(const Snapshot &s) {
+ if(s.pendingEvents.size()>events.size()||s.cursor>s.pendingEvents.size())return false;
+ actors=s.actorState;
+ for(unsigned i=0;i<2;++i){ghostPending[i]=s.pending[i];ghostBound[i]=s.bound[i];ghostObjects[i]=s.objects[i];players[i]=s.playerPointers[i];ghostGenerations[i]=s.generations[i];}
+ std::copy(s.pendingEvents.begin(),s.pendingEvents.end(),events.begin());
+ count=static_cast<unsigned>(s.pendingEvents.size());consumed=s.cursor;dropped=s.discarded;frame=s.phaseFrame;
+ // active/gameThread and the current creator/update call stack describe the
+ // CURRENT invocation; restoring old snapshots must not overwrite them.
+ return true;
 }
 inline void end() noexcept {active=false;}
 inline unsigned side(const void *p) {return p==players[0]?0:1;}

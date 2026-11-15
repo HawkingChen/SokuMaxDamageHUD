@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <set>
 #include <span>
 #include <utility>
 #include <vector>
@@ -11,7 +12,7 @@ namespace whm {
 // Values copied at the engine event, before objects can disappear/reuse memory.
 struct NativeEvent {
     enum Kind { Hit, Birth, Action, Rebind } kind=Hit;
-    unsigned frame=0,generation=0,creatorGeneration=0,parentGeneration=0;
+    unsigned frame=0,logicFrame=0,generation=0,creatorGeneration=0,parentGeneration=0;
     std::uintptr_t object=0,victim=0,owner=0,ally=0,creator=0,parent=0,caller=0;
     int action=0,sequence=0,boxAction=0,ownerAction=0,victimAction=0,ownerCharacter=-1;
     int damage=0,hp=0,ownerHP=0,comboHits=0,comboDamageBefore=0,protectedHP=0;
@@ -86,8 +87,16 @@ public:
         // Reserve physical births first: a child factory can return before
         // its parent. Bind edges in event order so a persistent helper's new
         // command cannot retag projectiles from its previous command.
-        for(const auto &e:batch)if(e.kind==NativeEvent::Birth)
-            node({e.object,e.generation});
+        // Published nodes are immutable between batches. A rollback snapshot
+        // can share their graph; replayed births must never mutate that graph.
+        std::set<ObjectKey> reserved;
+        for(const auto &e:batch)if(e.kind==NativeEvent::Birth) {
+            const ObjectKey key{e.object,e.generation};
+            if(reserved.insert(key).second) {
+                auto fresh=std::make_shared<Object>();nodes_.push_back(fresh);
+                objects_[key]=std::move(fresh);
+            }
+        }
         std::vector<Node> hitSources(batch.size());
         for(std::size_t index=0;index<batch.size();++index) {
             const auto &e=batch[index];

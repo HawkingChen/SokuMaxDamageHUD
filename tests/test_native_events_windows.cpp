@@ -1,8 +1,49 @@
 #define NOMINMAX
 #include "NativeEvents.hpp"
+#include "RollbackCallbacks.hpp"
 #include <cassert>
 #include <iostream>
 using namespace whm::native;
+static whm::GiurollCallbacks testCallbacks{};
+extern "C" void __cdecl testRegisterRollback(const whm::GiurollCallbacks *callbacks) {testCallbacks=*callbacks;}
+#pragma comment(linker,"/EXPORT:addRollbackCb=_testRegisterRollback")
+struct TestRollbackBridge {
+ struct Snapshot {whm::native::Snapshot stream;int score;};
+ static inline int score=0,postCalls=0,failures=0;
+ static Snapshot capture(){return {whm::native::snapshot(),score};}
+ static void restorePre(const Snapshot &s,std::uintptr_t){assert(whm::native::restore(s.stream));score=s.score;}
+ static void restorePost(const Snapshot &){++postCalls;}
+ static void failed()noexcept{++failures;}
+};
+static void testRollbackCallbackABIAndCaptureCursor(void *left,void *right) {
+ using Adapter=whm::GiurollBridge<TestRollbackBridge>;
+ assert(Adapter::attach(GetModuleHandleW(nullptr)));
+ assert(testCallbacks.save&&testCallbacks.loadPre&&testCallbacks.loadPost&&testCallbacks.free);
+ begin(200,left,right);captureAction(left,410);
+ consumed=count;TestRollbackBridge::score=947;
+ const auto before=actors.get(0);const auto oldCount=count;
+ ghostPending[0]=before;ghostBound[0]=before;ghostObjects[0]=left;ghostGenerations[0]=123;
+ const auto handle=testCallbacks.save();assert(handle);
+ captureAction(left,560);TestRollbackBridge::score=2601;
+ ghostPending[0]={};ghostBound[0]={};ghostObjects[0]=right;ghostGenerations[0]=999;
+ active=false;testCallbacks.loadPre(1234,handle);
+ assert(!active); // current capture scope is not an old game snapshot
+ assert(count==oldCount&&consumed==oldCount&&frame==200);
+ assert(actors.get(0).id==before.id&&actors.get(0).action==410);
+ assert(TestRollbackBridge::score==947);
+ assert(ghostPending[0].id==before.id&&ghostBound[0].id==before.id);
+ assert(ghostObjects[0]==left&&ghostGenerations[0]==123);
+ testCallbacks.loadPost(handle);assert(TestRollbackBridge::postCalls==1);
+ testCallbacks.free(handle,false);
+ // Pending, unconsumed events must also survive a save/load round trip.
+ active=true;captureAction(left,561);const auto pending=count;
+ const auto second=testCallbacks.save();captureAction(left,0);
+ testCallbacks.loadPre(1235,second);
+ assert(count==pending&&consumed==oldCount&&actors.get(0).action==561);
+ testCallbacks.free(second,true);assert(TestRollbackBridge::failures==0);
+ std::cout<<"Giuroll callback ABI, restore ordering, capture cursor and pending events passed\n";
+ end();
+}
 struct alignas(16) Result {unsigned regs[8],flags,padding[3];unsigned char fx[512];};
 __declspec(naked) void __cdecl runInstruction(void *code,void *attack,void *victim,void *ally,int amount,Result *out) {
  __asm {
@@ -287,6 +328,7 @@ int main(int argc,char **argv){
  for(const auto &h:five){assert(h.action==561&&h.instance==five[0].instance);total+=h.damage;}
  assert(total==1797);
  end();auto oldCount=count;captureHit(bullet.data(),p2.data(),500);assert(count==oldCount);
+ testRollbackCallbackABIAndCaptureCursor(p1.data(),p2.data());
  if(argc>1) {
   // Optional local integration check: map the real PE without executing its
   // entry point, install all signature-checked patches, then restore them.

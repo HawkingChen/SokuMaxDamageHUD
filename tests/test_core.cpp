@@ -1108,6 +1108,65 @@ static void testReisenPoisonDirectHPWritesAccumulateToItsSpell() {
     assert(records.best().actionId==608&&records.best().damage==1078);
 }
 
+static void testRollbackCancelsPredictedDamageInsteadOfDeduplicatingRealHits() {
+    using namespace whm;
+    struct State {NativeAttribution sources;RecordTracker record;};
+    auto start=[](State &state,int action) {
+        NativeEvent born;born.kind=NativeEvent::Birth;born.object=300;
+        born.owner=born.ally=born.creator=100;born.cast=1;born.castAction=action;
+        state.sources.consume(std::span<const NativeEvent>(&born,1),100);
+    };
+    auto hit=[](State &state,int action,int amount,unsigned frame) {
+        NativeEvent event;event.object=300;event.owner=event.ally=100;event.victim=200;
+        event.action=action;event.damage=amount;
+        const std::array<NativeEvent,1> events={event};
+        const auto own=state.sources.consume(events,100);
+        recordNativeFrame(state.record,own,events,200,frame,10000,10000);
+    };
+    State cirno;start(cirno,410);
+    const State beforeVolley=cirno;
+    for(int damage:{400,282,265})hit(cirno,410,damage,1210);
+    // The abandoned branch really ran, but restoring its checkpoint removes
+    // all its contributions. Replay then records the final timeline once.
+    cirno=beforeVolley;
+    for(int damage:{400,282,265})hit(cirno,410,damage,1212);
+    const State beforeFourth=cirno;
+    hit(cirno,410,241,1220);cirno=beforeFourth;
+    hit(cirno,410,241,1221);hit(cirno,410,225,1235);
+    assert(cirno.record.best().damage==1413); // formerly 2601
+    State reisen;start(reisen,500);hit(reisen,500,350,1);
+    const State beforeSecond=reisen;
+    hit(reisen,500,368,2);reisen=beforeSecond;hit(reisen,500,368,3);
+    for(int damage:{282,271,261})hit(reisen,500,damage,4);
+    assert(reisen.record.best().damage==1532); // formerly 1900
+    State remilia;start(remilia,308);const State beforeKick=remilia;
+    hit(remilia,308,965,1);remilia=beforeKick;hit(remilia,308,965,2);
+    assert(remilia.record.best().damage==965); // formerly 1930
+    // Identical legitimate multi-hits, including practice auto-heal, still
+    // accumulate. No global event-key blacklist or guessed damage ceiling.
+    hit(remilia,308,965,3);
+    assert(remilia.record.best().damage==1930);
+}
+
+static void testAttributionCheckpointGraphsAreImmutable() {
+    using namespace whm;
+    NativeAttribution sources;
+    NativeEvent born;born.kind=NativeEvent::Birth;born.object=300;
+    born.owner=born.creator=100;born.cast=1;born.castAction=410;
+    sources.consume(std::span<const NativeEvent>(&born,1),100);
+    const auto saved=sources;
+    // Replayed physical births may reuse the same address/generation on a
+    // different branch. They cannot mutate nodes shared by a saved state.
+    born.cast=2;born.castAction=560;
+    sources.consume(std::span<const NativeEvent>(&born,1),100);
+    NativeEvent hit;hit.object=300;hit.owner=hit.ally=100;hit.victim=200;hit.damage=500;
+    auto future=sources.consume(std::span<const NativeEvent>(&hit,1),100);
+    assert(future[0].action==560);
+    sources=saved;
+    const auto restored=sources.consume(std::span<const NativeEvent>(&hit,1),100);
+    assert(restored[0].action==410);
+}
+
 static void testSuwakoAutomaticRoutesKeepTheirActivationCast() {
     using namespace whm;
     for(const auto [from,to]:{std::pair{305,306},std::pair{552,550},std::pair{553,551}}) {
@@ -1262,6 +1321,8 @@ int main() {
     testYuyukoPoisonPersistsAfterOwnerRecoversAndStopsAtOneHP();
     testPersistentHelperCommandsDoNotRetagOlderProjectiles();
     testSuwakoAutomaticRoutesKeepTheirActivationCast();
+    testRollbackCancelsPredictedDamageInsteadOfDeduplicatingRealHits();
+    testAttributionCheckpointGraphsAreImmutable();
     testReceivedDamageIsNotLocalUnknownOutput();
     testMeilingFangPoFiveProjectilesOneCast();
     testNativePerHitAttribution();
