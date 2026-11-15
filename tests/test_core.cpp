@@ -1,3 +1,4 @@
+#include "NativeRecording.hpp"
 #include "NativeDamage.hpp"
 #include "DamageEngine.hpp"
 #include "ActionIdentity.hpp"
@@ -1079,6 +1080,47 @@ static void testNativePerHitAttribution() {
 // Real 0.5.9 failure: five HIT events were present but Meiling's factory
 // wasn't hooked, so every projectile lacked its BIRTH. Capture must precede
 // attribution; the game's 1797 combo total is not used as a substitute.
+static void testReceivedDamageIsNotLocalUnknownOutput() {
+    using namespace whm;
+    constexpr std::uintptr_t local=100,opponent=200;
+    NativeAttribution sources;RecordTracker records;
+    NativeEvent enemyHit;enemyHit.owner=enemyHit.ally=opponent;
+    enemyHit.object=opponent;enemyHit.victim=local;enemyHit.damage=1000;
+    std::array<NativeEvent,1> events={enemyHit};
+    auto own=sources.consume(events,local);
+    assert(own.empty());
+    recordNativeFrame(records,own,events,opponent,1,10000,10000);
+    assert(!records.hasObservedDamage());
+    // Physical ownership is not enough: a returned bullet credited to the
+    // opponent must not be recorded as our self-inflicted damage.
+    events[0].owner=local;events[0].ally=opponent;
+    own=sources.consume(events,local);
+    assert(own.empty());
+    recordNativeFrame(records,own,events,opponent,2,10000,10000);
+    assert(!records.hasObservedDamage());
+    // The opponent's native self-hit is not our unknown output either.
+    events[0]=enemyHit;events[0].victim=opponent;
+    own=sources.consume(events,local);
+    recordNativeFrame(records,own,events,opponent,3,10000,9000);
+    assert(!records.hasObservedDamage());
+    // An OWN spell hitting ourselves still records normally, by its event.
+    NativeDamage self{4000,614,1,true};
+    recordNativeFrame(records,std::span<const NativeDamage>(&self,1),{},opponent,4,10000,10000);
+    assert(records.best().actionId==614&&records.best().damage==4000&&records.best().selfDamage);
+    // A captured hit plus extra untracked opponent loss in the same frame:
+    // count only the residual as unknown; don't drop it or double count.
+    records.reset();NativeEvent hit;hit.owner=hit.ally=local;hit.victim=opponent;hit.damage=300;
+    NativeDamage named{300,400,2,false};
+    recordNativeFrame(records,std::span<const NativeDamage>(&named,1),
+        std::span<const NativeEvent>(&hit,1),opponent,5,10000,9000);
+    assert(records.best().damage==300&&records.unattributedDamage()==700);
+    // Practice refill leaves HP unchanged, but native damage still counts.
+    records.reset();
+    recordNativeFrame(records,std::span<const NativeDamage>(&named,1),
+        std::span<const NativeEvent>(&hit,1),opponent,6,10000,10000);
+    assert(records.best().damage==300&&records.unattributedDamage()==0);
+}
+
 static void testMeilingFangPoFiveProjectilesOneCast() {
     using namespace whm;
     NativeAttribution sources;RecordTracker record;
@@ -1112,6 +1154,7 @@ static void testArchivedRoundRecordCannotBeRevokedByReusedCastID() {
 }
 
 int main() {
+    testReceivedDamageIsNotLocalUnknownOutput();
     testMeilingFangPoFiveProjectilesOneCast();
     testNativePerHitAttribution();
     testArchivedRoundRecordCannotBeRevokedByReusedCastID();

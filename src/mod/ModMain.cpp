@@ -23,6 +23,7 @@
 #include "HitSnapshots.hpp"
 #include "GameAssets.hpp"
 #include "NativeEvents.hpp"
+#include "NativeRecording.hpp"
 
 #include <windows.h>
 #include <algorithm>
@@ -1169,14 +1170,9 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const auto nativeHits=g_nativeAttribution.consume(
         std::span<const whm::NativeEvent>(whm::native::events.data(),whm::native::count),
         reinterpret_cast<std::uintptr_t>(attacker),whm::native::dropped!=0);
-    for(const auto &h:nativeHits)
-        g_record.observeDamage(h.damage,h.action,mgr->frameCount,h.instance,false,0,h.self);
-    // Unsupported or bypassed engine paths still retain evidence of damage,
-    // but a frame's net HP loss is never attributed to the current animation.
-    if(nativeHits.empty()) {
-        const int unknown=std::max(std::max(0,before-after),std::max(0,ownHPBefore-attacker->HP));
-        if(unknown>0)g_record.observeDamage(unknown,-1,mgr->frameCount,0,true);
-    }
+    whm::recordNativeFrame(g_record,nativeHits,
+        std::span<const whm::NativeEvent>(whm::native::events.data(),whm::native::count),
+        reinterpret_cast<std::uintptr_t>(target),mgr->frameCount,before,after);
     // Opt-in local diagnostics. Snapshots corroborate native events; neither
     // the old contact heuristic nor numeric inference supplies a record.
     if(g_damageTraceEnabled && g_damageTraceFile &&
@@ -1267,12 +1263,12 @@ void loadSettings() {
     if(g_damageTraceFile.is_open())g_damageTraceFile.close();
     if(g_damageTraceEnabled) {
         g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
-        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.10; numerical inference disabled\n";
+        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.11; numerical inference disabled\n";
     }
     g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
     if(g_nativeTraceEnabled) {
         g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
-        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.10; all-character factories and update contexts\n";
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.11; all-character factories and update contexts\n";
         else g_nativeTraceEnabled=false;
     }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());

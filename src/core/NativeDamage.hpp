@@ -91,7 +91,7 @@ public:
         for(const auto &e:batch) {
             if(e.kind!=NativeEvent::Hit || e.damage<=0)continue;
             // ally is the engine's combo credit, owner is the physical owner.
-            if(e.ally!=local && e.owner!=local)continue;
+            if(e.ally!=local)continue;
             NativeCast source;
             if(!truncated && e.owner==local && e.ally==local) {
                 if(e.object==e.owner) {
