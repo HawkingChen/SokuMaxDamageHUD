@@ -555,6 +555,10 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         if(view.hand.size()==5)break;
     }
     const auto &best=g_record.best();
+    // The BEST HIT card only ever shows a verified single cast. There is
+    // deliberately no "UNKNOWN MOVE" branch: an unresolvable 5C+j6A frame
+    // is a combo total, not a move, and must not be presented as the best
+    // hit. With no verified record the panel shows its NO RECORD state.
     if(best.attributed&&best.damage>0){
         const int action=best.actionId;
         const int card=whm::cardForAction(view.character,action);
@@ -563,10 +567,6 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                label.notation,label.notation,label.fallback,false);
         rec.names=label.names;
         view.record=rec;
-    } else if(best.damage>0) {
-        view.record.damage=best.damage;
-        view.record.approximate=false;
-        view.record.names={"未识别招式","不明な技","UNKNOWN MOVE"};
     }
     {std::lock_guard<std::mutex> guard(g_panelMutex);g_panelView=std::move(view);}
     return {{"什么最痛",-1}};

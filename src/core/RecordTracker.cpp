@@ -1,8 +1,13 @@
 #include "RecordTracker.hpp"
 #include <algorithm>
 namespace whm {
-void RecordTracker::reset() { casts_.clear(); best_ = {}; mixedFallback_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; }
-void RecordTracker::commit() { if (active_.damage > best_.damage) best_ = active_; active_ = {}; }
+void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; }
+void RecordTracker::commit() {
+    // Defensive guard for the legacy HP-only API: an unattributed episode can
+    // never become the BEST HIT, even if it carries a larger HP delta.
+    if (active_.attributed && active_.damage > best_.damage) best_ = active_;
+    active_ = {};
+}
 void RecordTracker::finish() { commit(); }
 void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint64_t instance,
                                   bool mixedSources) {
@@ -11,17 +16,16 @@ void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint
     if(damage<=0)return;
     if(mixedSources) {
         // The source cannot be divided into separate moves, but the damage
-        // really happened. Show an unassigned fallback IF no trustworthy
-        // single-move record exists; never claim it was all j6A, nor hide
-        // the entire "most damage" area when all hits are ambiguous.
+        // really happened. Keep it as observed-but-unranked damage: never
+        // claim it was all j6A, and never surface it as an "UNKNOWN MOVE"
+        // record. DamageTrace.log shows these frames are 5C+j6A combos
+        // (2280/777, 1956/206/795/65), not single moves.
         unattributedDamage_+=damage;
-        if(damage>mixedFallback_.damage)
-            mixedFallback_={damage,-1,false,false};
         return;
     }
     if(action<300||action>=690||!instance) {
+        // An unresolvable frame is still counted, but it is not a move.
         unattributedDamage_+=damage;
-        if(damage>best_.damage)best_={damage,-1,false,false};
         return;
     }
     auto &record=casts_[instance];

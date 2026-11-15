@@ -75,9 +75,12 @@ static void testProjectileRecords() {
     assert(observedDamage(9758,9525,{1,242,false},{2,475,false})==233);
     assert(observedDamage(10000,9900,{0,0,true},{0,0,true})==100); // chip
     assert(observedDamage(20,0,{0,0,true},{1,500,false})==20); // HP clamp
+    // An unresolvable frame is observed but is NOT a move: it must never
+    // become the BEST HIT (that path rendered "UNKNOWN MOVE" for Suika).
     RecordTracker unknown;
     unknown.observeDamage(500,-1,1,0);
-    assert(unknown.best().damage==500&&!unknown.best().attributed);
+    assert(unknown.best().damage==0&&!unknown.best().attributed);
+    assert(unknown.unattributedDamage()==500);
     // A 4-cost Utsuho sun keeps generating child bullets after the fighter
     // becomes idle and even just after an emitter despawns. A child with an
     // explicit parent must inherit the ORIGINAL SC606 cast, not a new action.
@@ -232,15 +235,19 @@ static void testDelayedBirthAndDormantProjectileSafety() {
     assert(justNormal.origin.valid()&&justNormal.origin.action==307&&!justNormal.mixed);
 }
 
-static void testVisibleRecordsAndDelayedNoFlagDamage() {
+static void testMixedDamageNeverBecomesBestRecord() {
     using namespace whm;
-    // Regression: mixed damage MUST NOT leave the HUD's best record empty.
+    // Regression from DamageTrace.log: an unresolvable 5C+j6A frame is a
+    // combo total, not a move. It must be kept as observed damage but NEVER
+    // ranked, and NEVER rendered as "UNKNOWN MOVE" in the BEST HIT card.
     RecordTracker fallback;
     fallback.observeDamage(777,-1,1,0,true);
-    assert(fallback.best().damage==777&&!fallback.best().attributed);
+    assert(fallback.best().damage==0&&!fallback.best().attributed);
     assert(fallback.best().actionId==-1);
-    fallback.observeDamage(420,-1,2,0,true);
-    assert(fallback.best().damage==777);
+    assert(fallback.unattributedDamage()==777);
+    fallback.observeDamage(3057,-1,2,0,true);
+    assert(fallback.best().damage==0);
+    assert(fallback.unattributedDamage()==3834);
     // Once a genuinely identified single cast exists, mixed damage cannot
     // falsely replace it even if the mixture is numerically larger.
     fallback.observeDamage(800,307,3,1);
@@ -249,6 +256,14 @@ static void testVisibleRecordsAndDelayedNoFlagDamage() {
     assert(fallback.best().damage==800&&fallback.best().actionId==307);
     fallback.reset();
     assert(fallback.best().damage==0);
+    // The invariant holds for arbitrary interleavings of mixed and clean hits.
+    RecordTracker fuzz;
+    for(int i=1;i<=200;++i) {
+        const bool mixed=(i%3==0);
+        fuzz.observeDamage(100+i,mixed?-1:(i%2?410:307),static_cast<unsigned>(i),
+                           mixed?0:(i%2?1:2),mixed);
+        assert(fuzz.best().attributed||fuzz.best().damage==0);
+    }
 
     ActorContact shot, idle, body;
     shot.action=410;shot.animationFrame=12;
@@ -482,13 +497,72 @@ static void testPanelLayouts() {
     assert(!pending.request(target,original,2200)); // bounded, no resize loop
 }
 
+// Replay of the two real Suika practice rounds captured in DamageTrace.log.
+// Every frame that actually dealt damage is here, in order, with its real
+// attribution result. This pins the fix to the observed hardware data rather
+// than to another synthetic guess about 5C+j6A.
+static void testSuikaDamageTraceReplay() {
+    using namespace whm;
+    struct Event { unsigned frame; int damage; int action; std::uint64_t instance; bool mixed; };
+    // 410 = 5C, 307 = j6A. Overlap frames had source=-1:0 mixed=1 with
+    // unresolved=20..32, i.e. deliberately unresolvable 5C+j6A combos.
+    const Event round1[] = {
+        {282,2280,410,1,false},
+        {420,1200,307,2,false},
+        {732,2280,-1,0,true},
+        {735,777,-1,0,true},
+    };
+    const Event round2[] = {
+        {125,2280,410,1,false},
+        {271,1200,307,2,false},
+        {517,1956,-1,0,true},
+        {518,206,-1,0,true},
+        {520,795,-1,0,true},
+        {543,65,-1,0,true},
+    };
+    RecordTracker record;
+    auto replay=[&](const Event *events,int count) {
+        int unattributed=0;
+        for(int i=0;i<count;++i) {
+            const auto &e=events[i];
+            record.observeDamage(e.damage,e.action,e.frame,e.instance,e.mixed);
+            const auto &best=record.best();
+            // Never an unattributed "UNKNOWN MOVE", not even transiently.
+            assert(best.attributed&&best.damage==2280&&best.actionId==410);
+            assert(!best.isSpell);
+            if(e.mixed)unattributed+=e.damage;
+            assert(record.unattributedDamage()==unattributed);
+        }
+    };
+    replay(round1,4);
+    // DamageTrace.log shows best=-1:0 at frames 74..124: entering the next
+    // round re-creates the BattleManager and resets the tracker.
+    record.reset();
+    replay(round2,6);
+
+    // The exact user repro: a fresh practice session whose FIRST hits are
+    // the 5C+j6A overlap. There is no clean single cast to fall back on,
+    // so no record may be fabricated.
+    RecordTracker overlapFirst;
+    overlapFirst.observeDamage(1956,-1,517,0,true);
+    overlapFirst.observeDamage(206,-1,518,0,true);
+    overlapFirst.observeDamage(795,-1,520,0,true);
+    overlapFirst.observeDamage(65,-1,543,0,true);
+    assert(overlapFirst.best().damage==0&&!overlapFirst.best().attributed);
+    assert(overlapFirst.unattributedDamage()==3022);
+    // A clean 5C later in the same session restores a correct BEST HIT.
+    overlapFirst.observeDamage(2280,410,600,1,false);
+    assert(overlapFirst.best().damage==2280&&overlapFirst.best().actionId==410);
+}
+
 int main() {
     testPanelLayouts();
     testHudRoundingModes();
     testProjectileRecords();
     testSuikaDelayed5CWithJ6A();
     testDelayedBirthAndDormantProjectileSafety();
-    testVisibleRecordsAndDelayedNoFlagDamage();
+    testMixedDamageNeverBecomesBestRecord();
+    testSuikaDamageTraceReplay();
     testSpellFollowupAttribution();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");

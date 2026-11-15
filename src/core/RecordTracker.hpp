@@ -24,15 +24,18 @@ public:
     void observeDamage(int damage, int action, unsigned frame, std::uint64_t instance,
                        bool mixedSources = false);
     void finish();
-    // Preserve a visible record even when this is a genuinely mixed hit.
-    // Only use it when no independently attributed/observed single move exists.
-    const ActualRecord &best() const { return best_.damage>0?best_:mixedFallback_; }
+    // INVARIANT: the BEST HIT card is a ranking of verified single casts only.
+    // Unresolvable/mixed damage is observed into unattributedDamage() but is
+    // NEVER returned here. Showing an unattributed total as "UNKNOWN MOVE"
+    // (or as a blank card that gets filled with a fabricated fallback) is
+    // exactly the 5C+j6A regression captured in DamageTrace.log. If nothing
+    // has been verified, best().damage is 0 and the panel shows NO RECORD.
+    const ActualRecord &best() const { return best_; }
     int unattributedDamage() const { return unattributedDamage_; }
 private:
     void commit();
     std::map<std::uint64_t,ActualRecord> casts_;
-    ActualRecord best_{};
-    ActualRecord mixedFallback_{}; // never overtakes a real single-move record
+    ActualRecord best_{}; // only ever assigned attributed single-cast records
     ActualRecord active_{};
     unsigned lastFrame_ = 0;
     unsigned lastHitFrame_ = 0;
