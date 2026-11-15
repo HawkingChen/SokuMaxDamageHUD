@@ -844,6 +844,12 @@ static void testDamageInferenceSuikaComboReplay() {
     assert(tracker.best().attributed&&tracker.best().damage==500);
     tracker.reset();
     assert(!tracker.inferred().valid);
+    // Call-site upper bound: a cast inside a combo can never exceed the
+    // combo's own total, so a combo at/below the record cannot beat it.
+    assert(whm::inferenceCanBeatRecord(1244,0));      // no verified record yet
+    assert(whm::inferenceCanBeatRecord(3057,2280));
+    assert(!whm::inferenceCanBeatRecord(1244,2280));
+    assert(!whm::inferenceCanBeatRecord(2280,2280));  // equal cannot raise it
 }
 
 int main() {

@@ -57,6 +57,13 @@ struct InferenceResult {
     std::string reason;
 };
 
+// A cast inside a combo can never have dealt more than the combo's own
+// cumulative damage. When that total is at or below the verified BEST HIT,
+// no inferred cast could raise the record, so the solver can be skipped.
+inline bool inferenceCanBeatRecord(int comboDamage, int bestDamage) {
+    return comboDamage > bestDamage;
+}
+
 class DamageInference {
 public:
     // Reads config/HitProfiles.tsv. Returns false only on malformed rows.

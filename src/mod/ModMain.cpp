@@ -1115,8 +1115,13 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         g_comboOrigins.clear();
         g_comboActorAction=-1;
     }
+    // A single cast can never have dealt more than its combo's own total. If
+    // that total is at or below the verified BEST HIT, no inferred cast could
+    // raise the record, so reverse-solving this combo is pure wasted work.
+    const int bestDamage=g_record.best().damage;
     if(dealt>0 && (source.mixed||!source.origin.valid()) &&
        comboAfter.damage>0 && g_inference.size()>0 &&
+       whm::inferenceCanBeatRecord(comboAfter.damage,bestDamage) &&
        (comboStarted||mgr->frameCount-g_lastInferFrame>=6)) {
         g_lastInferFrame=mgr->frameCount;
         const auto &ownCounters=side==0?mgr->leftCharacterManager:mgr->rightCharacterManager;
