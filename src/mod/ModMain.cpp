@@ -68,6 +68,7 @@ whm::DamageInference g_inference;
 whm::OpeningCounterCatalog g_openingCounters;
 whm::RecordTracker g_record;
 whm::HitAttribution g_hitAttribution;
+whm::NativeAttribution g_nativeAttribution;
 // Evidence collected during the CURRENT combo. Combo damage is cumulative,
 // so the solver always explains the whole combo from its starting HP.
 int g_comboStartHP = 10000;
@@ -123,7 +124,7 @@ void flushNativeEvents() {
     auto &out=g_nativeTraceFile;
     for(unsigned i=0;i<whm::native::count;++i) {
         const auto &e=whm::native::events[i];
-        out<<(e.kind==whm::native::Event::Hit?"HIT":"BIRTH")
+        out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":"ACTION")
            <<" frame="<<e.frame<<" object="<<std::hex<<e.object<<std::dec
            <<":"<<e.generation<<" owner="<<std::hex<<e.owner
            <<" ally="<<e.ally<<" victim="<<e.victim
@@ -131,6 +132,7 @@ void flushNativeEvents() {
            <<" parent="<<std::hex<<e.parent<<" caller="<<e.caller<<std::dec
            <<" action="<<e.action<<" seq="<<e.sequence<<" box="<<e.boxAction
            <<" ownerAction="<<e.ownerAction<<" victimAction="<<e.victimAction
+           <<" cast="<<e.cast<<":"<<e.castAction<<" path="<<e.path
            <<" self="<<(e.owner==e.victim)<<" damage="<<e.damage
            <<" victimHP="<<e.hp<<" ownerHP="<<e.ownerHP
            <<" combo="<<e.comboHits<<":"<<e.comboDamageBefore
@@ -624,47 +626,25 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         if(view.hand.size()==5)break;
     }
     const auto &best=g_record.best();
-    const auto &inferred=g_record.inferred();
-    // BEST HIT ranks verified single casts. When a combo is mixed or
-    // unresolved, DamageInference reverse-solves the game's cumulative combo
-    // damage into the most likely cast; show THAT CAST'S OWN share, never the
-    // whole 3057 combo as one move. The card is marked approximate/estimated
-    // so a simulation is never passed off as measured.
-    // Delayed spells detonate after their owner is gone (Marisa's 4-card SC
-    // logged 4000@0.90 with best=500:1350), so a high-confidence LARGER
-    // simulated cast must be allowed to outrank an older verified record.
-    // best_ is NEVER overwritten: pickRecordSource() owns the guards and is
-    // unit-tested, so record pruning and later real hits still use real data.
     const whm::RecordSource recordSource=whm::pickRecordSource(
-        best,inferred,g_record.comboPeak(),g_record.hasObservedDamage());
+        best,g_record.inferred(),g_record.comboPeak(),g_record.hasObservedDamage());
     if(recordSource==whm::RecordSource::Verified){
         const int action=best.actionId;
         const int card=whm::cardForAction(view.character,action);
-        const MoveLabel label=labelForAction(*own,action,best.damage);
+        // A shared action ID does not prove a charge variant from damage alone.
+        const MoveLabel label=labelForAction(*own,action);
         PanelCard rec=makeCard(view.character,card,best.damage,
                                label.notation,label.notation,label.fallback,false);
         rec.names=label.names;
         view.record=rec;
-    } else if(recordSource==whm::RecordSource::Inferred) {
-        const int action=inferred.actionId;
-        const int card=inferred.card>=0?inferred.card:
-                       whm::cardForAction(view.character,action);
-        const MoveLabel label=labelForAction(*own,action,inferred.damage);
-        PanelCard rec=makeCard(view.character,card,inferred.damage,
-                               label.notation,label.notation,label.fallback,true);
-        rec.names=label.names;
-        static const char *const kEstimateTag[3]={
-            "（推定）","（推定）"," (EST.)"};
-        for(int i=0;i<3;++i)
-            if(!rec.names[i].empty())rec.names[i]+=kEstimateTag[i];
-        view.record=rec;
-    } else if(recordSource==whm::RecordSource::Combo) {
-        // Last resort only: no verified cast and the simulation failed.
-        // Show the authoritative combo peak with an honest COMBO label.
-        view.record.damage=g_record.comboPeak()>0?
-            g_record.comboPeak():g_record.unattributedDamage();
+        if(best.selfDamage) {
+            static const char *const tag[3]={"（自伤）","（自傷）"," (SELF-DAMAGE)"};
+            for(int i=0;i<3;++i)view.record.names[i]+=tag[i];
+        }
+    } else if(recordSource==whm::RecordSource::Unattributed) {
+        view.record.damage=g_record.unattributedPeak();
         view.record.approximate=false;
-        view.record.names={"连段伤害","コンボダメージ","COMBO DAMAGE"};
+        view.record.names={"未识别伤害","帰属不明のダメージ","UNATTRIBUTED DAMAGE"};
     }
     {std::lock_guard<std::mutex> guard(g_panelMutex);g_panelView=std::move(view);}
     return {{"什么最痛",-1}};
@@ -1096,6 +1076,8 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         }
         g_record.reset();
         g_hitAttribution.reset();
+        g_nativeAttribution.reset();
+        whm::native::resetActors();
         g_comboStartHP=10000;
         g_comboActorAction=-1;
         g_comboOrigins.clear();
@@ -1111,8 +1093,11 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     }
     // Keep the best hit across round transitions; only re-create the HUD.
     if (mgr->frameCount < g_lastFrame) {
+        g_record.nextRound();
         g_lastRefresh = 0;
         g_hitAttribution.reset();
+        g_nativeAttribution.reset();
+        whm::native::resetActors();
         g_comboOrigins.clear();
         g_comboActorAction=-1;
         g_lastInferFrame=0;
@@ -1132,11 +1117,12 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const int ownHPBefore=ownBefore->HP;
     const auto actorBefore=whm::actorContact(*ownBefore);
     whm::ProjectileSnapshotDiag projectilePreDiag;
-    const auto objectsBefore=whm::projectileContacts(*ownBefore,&projectilePreDiag);
+    const auto objectsBefore=g_damageTraceEnabled?whm::projectileContacts(*ownBefore,&projectilePreDiag):std::vector<whm::ProjectileContact>{};
     const auto comboBefore=whm::comboReading(*ownBefore,*targetBefore);
-    if(g_nativeTraceEnabled)whm::native::begin(mgr->frameCount,viewPlayer(mgr,0),viewPlayer(mgr,1));
+    whm::native::begin(mgr->frameCount,viewPlayer(mgr,0),viewPlayer(mgr,1));
     const int result = (mgr->*g_originalProcess)();
-    if(g_nativeTraceEnabled){whm::native::end();flushNativeEvents();}
+    whm::native::end();
+    if(g_nativeTraceEnabled)flushNativeEvents();
     if (ownSide() != side || &SokuLib::getBattleMgr()!=mgr ||
         (SokuLib::sceneId!=SokuLib::SCENE_BATTLE && SokuLib::sceneId!=SokuLib::SCENE_BATTLESV && SokuLib::sceneId!=SokuLib::SCENE_BATTLECL)) {
         g_panelWanted.store(false);
@@ -1148,100 +1134,26 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const auto *target=viewPlayer(mgr,1-side);
     whm::ProjectileSnapshotDiag projectilePostDiag;
     const auto actorAfter=whm::actorContact(*attacker);
-    const auto objectsAfter=whm::projectileContacts(*attacker,&projectilePostDiag);
+    const auto objectsAfter=g_damageTraceEnabled?whm::projectileContacts(*attacker,&projectilePostDiag):std::vector<whm::ProjectileContact>{};
     const auto comboAfter=whm::comboReading(*attacker,*target);
-    const auto source=g_hitAttribution.observeDetailed(
-        actorBefore,actorAfter,objectsBefore,objectsAfter);
+    const auto source=g_damageTraceEnabled?g_hitAttribution.observeDetailed(
+        actorBefore,actorAfter,objectsBefore,objectsAfter):whm::HitAttributionResult{};
     const int dealt=whm::observedDamage(before,after,comboBefore,comboAfter);
-    // ---- Combo-level source reconstruction --------------------------------
-    // The record number is the game's CUMULATIVE combo damage, not a frame
-    // delta and not a single cast. Collect the casts that were actually live
-    // during this combo, then reverse-solve the total with the ported damage
-    // formula + Cleista per-hit fingerprints.
-    const bool comboStarted=comboBefore.hits==0&&comboAfter.hits>0;
-    if(comboStarted) {
-        g_comboStartHP=before>0?before:10000;
-        g_comboOrigins.clear();
-        g_comboActorAction=-1;
-        g_lastInferFrame=0;
-        g_lastInfer={};
+    // Actual records come only from per-hit engine events. HP/combos are
+    // diagnostic corroboration, never a numerical guess of a move's name.
+    const auto nativeHits=g_nativeAttribution.consume(
+        std::span<const whm::NativeEvent>(whm::native::events.data(),whm::native::count),
+        reinterpret_cast<std::uintptr_t>(attacker),whm::native::dropped!=0);
+    for(const auto &h:nativeHits)
+        g_record.observeDamage(h.damage,h.action,mgr->frameCount,h.instance,false,0,h.self);
+    // Unsupported or bypassed engine paths still retain evidence of damage,
+    // but a frame's net HP loss is never attributed to the current animation.
+    if(nativeHits.empty()) {
+        const int unknown=std::max(std::max(0,before-after),std::max(0,ownHPBefore-attacker->HP));
+        if(unknown>0)g_record.observeDamage(unknown,-1,mgr->frameCount,0,true);
     }
-    auto addOrigin=[&](int action) {
-        if(action<300||action>=690)return;
-        for(int old:g_comboOrigins)if(old==action)return;
-        g_comboOrigins.push_back(action);
-    };
-    if(dealt>0) {
-        for(const auto &c:source.candidates)addOrigin(c.action);
-        addOrigin(actorBefore.action);
-        addOrigin(actorAfter.action);
-        if(actorAfter.action>=300&&actorAfter.action<690)
-            g_comboActorAction=actorAfter.action;
-    }
-    if(comboAfter.hits==0) {
-        g_comboOrigins.clear();
-        g_comboActorAction=-1;
-    }
-    // A cast cannot exceed its own move's FULL projectile stream. 1.5x
-    // leaves room for weather/attack/counter-hit multipliers but rejects the
-    // real-log case where a spell's 2000+1500 was credited to j.5C and became
-    // "j.5C 3500". The ceiling must NOT use Cleista's 1107 summary value:
-    // that is one 8-bullet measurement of a move that spawns 18 (density
-    // "C1x18"), and a real full j.5C lands 2280. A suspect identity is
-    // treated like an unresolvable one: reverse-solve the combo instead.
-    const int srcAction=source.origin.action;
-    const int neutral=(srcAction>=300&&srcAction<690)
-        ? g_inference.maxNeutralDamage(static_cast<int>(attacker->characterIndex),srcAction)
-        : 0;
-    const int castCeiling=neutral>0?(neutral*3)/2:0;
-    const bool suspectCast=castCeiling>0&&dealt>0&&source.origin.valid()&&
-        g_record.castDamage(source.origin.instance)+dealt>castCeiling;
-    // A single cast can never have dealt more than its combo's own total. If
-    // that total is at or below the verified BEST HIT, no inferred cast could
-    // raise the record, so reverse-solving this combo is pure wasted work.
-    const int bestDamage=g_record.best().damage;
-    if(dealt>0 && (source.mixed||!source.origin.valid()||suspectCast) &&
-       comboAfter.damage>0 && g_inference.size()>0 &&
-       whm::inferenceCanBeatRecord(comboAfter.damage,bestDamage) &&
-       (comboStarted||mgr->frameCount-g_lastInferFrame>=6)) {
-        g_lastInferFrame=mgr->frameCount;
-        const auto &ownCounters=side==0?mgr->leftCharacterManager:mgr->rightCharacterManager;
-        // Runtime fields are multipliers near 1.0. A missing/zero/NaN value
-        // would make every simulated cast zero damage and silently disable
-        // inference, so fall back to neutral instead of trusting it blindly.
-        auto saneMul=[](double v){return (v>0.2&&v<=3.0)?v:1.0;};
-        whm::InferenceState st;
-        st.character=static_cast<int>(attacker->characterIndex);
-        st.defenderHP=g_comboStartHP;
-        st.comboHits=comboAfter.hits;
-        st.comboRate=1.0; // explain the WHOLE combo from its own start
-        st.attack=saneMul(attacker->attackPower);
-        st.defense=saneMul(target->defensePower);
-        st.skillMultiplier=saneMul(attacker->specialDmgMultiplier);
-        st.spellMultiplier=saneMul(attacker->spellDmgMultiplier);
-        st.weather=static_cast<int>(ownCounters.effectiveWeather);
-        st.typeIncludesWeather=true; // runtime multipliers already include weather
-        st.actorAction=g_comboActorAction;
-        st.originActions=g_comboOrigins;
-        g_lastInfer=g_inference.solve(comboAfter.damage,st);
-        if(g_lastInfer.valid&&g_lastInfer.confidence>=0.35&&
-           g_lastInfer.primaryAction>=300&&g_lastInfer.primaryDamage>0)
-            g_record.observeInferred(g_lastInfer.primaryAction,g_lastInfer.primaryCard,
-                                     g_lastInfer.primaryDamage,g_lastInfer.confidence);
-    }
-    // NEVER attribute the whole 5C + j6A (or other mixed-source) frame to
-    // the sole detected contact, and never rank the aggregate as one move.
-    g_record.observeDamage(dealt,source.origin.action,mgr->frameCount,
-                           source.origin.instance,source.mixed,castCeiling);
-    // Authoritative, attribution-independent evidence that damage happened.
-    // The game's own combo counter is read from the attacker, so it stays
-    // correct even when HitAttribution cannot decide which cast caused a
-    // frame. This is what keeps the BEST HIT card from ever reading
-    // "NO HIT RECORDED" after a real hit.
-    g_record.observeCombo(comboAfter.damage);
-    // Opt-in diagnostic log. No network access, no raw memory writes, no
-    // instrumentation of the game's own damage routines. Never enable in
-    // ordinary builds without the player's explicit INI setting.
+    // Opt-in local diagnostics. Snapshots corroborate native events; neither
+    // the old contact heuristic nor numeric inference supplies a record.
     if(g_damageTraceEnabled && g_damageTraceFile &&
        (dealt>0 || ownHPBefore!=attacker->HP ||
         (actorBefore.action!=actorAfter.action && (actorBefore.action>=600 || actorAfter.action>=600)) ||
@@ -1297,6 +1209,8 @@ void __fastcall onExit(SokuLib::BattleManager *mgr) {
     g_panelWanted.store(false);
     g_record.reset();
     g_hitAttribution.reset();
+    g_nativeAttribution.reset();
+    whm::native::resetActors();
     g_probeCache.clear();
     g_probeCharacter = -1;
     g_probeDataSource = nullptr;
@@ -1328,12 +1242,12 @@ void loadSettings() {
     if(g_damageTraceFile.is_open())g_damageTraceFile.close();
     if(g_damageTraceEnabled) {
         g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
-        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: damage-source diagnostics enabled\n";
+        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.8; numerical inference disabled\n";
     }
     g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
     if(g_nativeTraceEnabled) {
         g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
-        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native settlement probe v1; diagnostics only; records unchanged\n";
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native settlement probe v1; native per-hit attribution enabled\n";
         else g_nativeTraceEnabled=false;
     }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
@@ -1404,12 +1318,12 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE self, HMODULE) {
     DWORD ignore = 0;
     VirtualProtect(reinterpret_cast<void *>(RDATA_SECTION_OFFSET), RDATA_SECTION_SIZE, old, &ignore);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
-    if(g_nativeTraceEnabled) {
-        const bool ok=whm::native::install();
-        g_nativeTraceFile<<"# nativeHooks="<<(ok?"installed":"DISABLED: unsupported or modified code / allocation failure")<<"\n";
+    const bool nativeOK=whm::native::install();
+    if(g_nativeTraceFile) {
+        g_nativeTraceFile<<"# nativeHooks="<<(nativeOK?"installed":"DISABLED: unsupported or modified code / allocation failure")<<"\n";
         g_nativeTraceFile.flush();
-        if(!ok)g_nativeTraceEnabled=false;
     }
+    if(g_damageTraceFile)g_damageTraceFile<<"# nativeHooks="<<nativeOK<<"; inferred move records disabled\n";
     HANDLE thread = CreateThread(nullptr, 0, panelThread, nullptr, 0, nullptr);
     if (thread) CloseHandle(thread);
     g_hooksInstalled = true;

@@ -1,3 +1,4 @@
+#include "NativeDamage.hpp"
 #include "DamageEngine.hpp"
 #include "ActionIdentity.hpp"
 #include "MoveCatalog.hpp"
@@ -950,12 +951,12 @@ static void testChargedVariantLabels() {
 // The caster is already idle (action=5) and every projectile is an orphan, so
 // HitAttribution can never produce an owner; the verified record stayed 1350
 // and the 4000 estimate was never allowed onto the BEST HIT card.
-static void testDelayedSpellEstimateCanTakeBestHitCard() {
+static void testEstimatesNeverBecomeActualRecord() {
     using namespace whm;
     const ActualRecord verified{1350,500,true,false,false};
     const InferredRecord delayed{true,614,214,4000,0.90};
-    // The exact real-log situation: a high-confidence larger estimate wins.
-    assert(pickRecordSource(verified,delayed,4000,true)==RecordSource::Inferred);
+    // The old failure: numerical similarity must NOT override a measured cast.
+    assert(pickRecordSource(verified,delayed,4000,true)==RecordSource::Verified);
     // ...but best_ itself stays VERIFIED. Record pruning and future real hits
     // must keep using measured data, never a simulation.
     RecordTracker tracker;
@@ -966,7 +967,7 @@ static void testDelayedSpellEstimateCanTakeBestHitCard() {
     assert(tracker.best().attributed&&tracker.best().damage==1350);
     assert(pickRecordSource(tracker.best(),tracker.inferred(),
                             tracker.comboPeak(),tracker.hasObservedDamage())
-           ==RecordSource::Inferred);
+           ==RecordSource::Verified);
     // 5C/j.6A overlap must NOT regress: a tying or weaker estimate loses.
     const ActualRecord cast5C{2280,410,true,false,false};
     const InferredRecord tie{true,410,-1,2280,0.85};
@@ -979,10 +980,10 @@ static void testDelayedSpellEstimateCanTakeBestHitCard() {
     // A simulated number above ANY observed damage is a fitting artefact.
     const InferredRecord overshoot{true,614,214,5000,0.99};
     assert(pickRecordSource(verified,overshoot,4000,true)==RecordSource::Verified);
-    // No verified record yet: estimate takes the slot (previous behaviour).
-    assert(pickRecordSource(ActualRecord{},delayed,4000,true)==RecordSource::Inferred);
-    // No usable estimate: authoritative combo total, never a fabricated name.
-    assert(pickRecordSource(ActualRecord{},InferredRecord{},4000,true)==RecordSource::Combo);
+    // No verified cast: even a high-confidence estimate remains unassigned.
+    assert(pickRecordSource(ActualRecord{},delayed,4000,true)==RecordSource::Unattributed);
+    // Missing identity is explicitly unassigned, never a fabricated move name.
+    assert(pickRecordSource(ActualRecord{},InferredRecord{},4000,true)==RecordSource::Unattributed);
     assert(pickRecordSource(verified,InferredRecord{},4000,true)==RecordSource::Verified);
     // Untouched tracker: NO HIT RECORDED remains correct.
     assert(pickRecordSource(ActualRecord{},InferredRecord{},0,false)==RecordSource::Empty);
@@ -1006,7 +1007,90 @@ static void testDelayedSpellEstimateCanTakeBestHitCard() {
     assert(!noCmd.split);
 }
 
+static void testNativePerHitAttribution() {
+    using namespace whm;
+    NativeActors actors;
+    const auto first=actors.set(0,400);
+    const auto second=actors.set(0,400);
+    assert(first.id!=second.id); // repeated identical moves are separate casts
+    actors.reset();
+    const auto third=actors.set(0,400);
+    assert(third.id>second.id); // a round never recycles cast IDs
+    const auto spell=actors.set(0,614);
+    assert(actors.set(0,664).id==spell.id);
+    assert(actors.set(0,614).id!=spell.id);
+    const auto skill=actors.set(0,505);
+    assert(actors.set(0,505,2).id==skill.id);
+    assert(!actors.set(0,0).valid());
+
+    constexpr std::uintptr_t own=100,other=200;
+    auto birth=[&](std::uintptr_t object,unsigned gen,std::uintptr_t creator,unsigned creatorGen,
+                   std::uint64_t cast,int action) {
+        NativeEvent e;e.kind=NativeEvent::Birth;e.object=object;e.generation=gen;
+        e.owner=e.ally=own;e.creator=creator;e.creatorGeneration=creatorGen;
+        e.cast=cast;e.castAction=action;return e;
+    };
+    auto hit=[&](std::uintptr_t object,unsigned gen,int damage,std::uintptr_t victim=200) {
+        NativeEvent e;e.object=object;e.generation=gen;e.owner=e.ally=own;
+        e.damage=damage;e.victim=victim;return e;
+    };
+    NativeAttribution sources;RecordTracker tracker;
+    auto feed=[&](std::vector<NativeEvent> events,unsigned frame=1,bool lost=false) {
+        auto hits=sources.consume(events,own,lost);
+        for(const auto &h:hits)tracker.observeDamage(h.damage,h.action,frame,h.instance,false,0,h.self);
+        return hits;
+    };
+    // Child returns before root; neither retains a persistent parent pointer.
+    auto events=std::vector<NativeEvent>{birth(301,1,300,1,0,-1),birth(300,1,own,0,10,400),
+        hit(301,1,300),hit(301,1,277),hit(301,1,255)};
+    auto b=feed(events);
+    assert(b.size()==3&&b[0].instance==b[2].instance);
+    assert(tracker.best().actionId==400&&tracker.best().damage==832);
+    // JA in the SAME engine update is credited separately, not to B.
+    auto ja=hit(own,0,319);ja.boxAction=307;ja.castAction=307;ja.cast=11;
+    feed({ja});
+    assert(tracker.best().damage==832);
+    // Long-delayed scripted self hit: keep its casting spell after idle.
+    feed({birth(500,1,own,0,12,614)});
+    auto bomb=hit(500,1,5333,own);bomb.ownerAction=0;bomb.path=1;
+    feed({bomb},900);
+    assert(tracker.best().actionId==614&&tracker.best().damage==5333&&tracker.best().selfDamage);
+    // The SAME cast hitting the opponent is a different victim bucket.
+    feed({hit(500,1,4000)},901);
+    assert(tracker.best().damage==5333);
+    // Address reuse, missing chain, owner/credit mismatch and buffer loss
+    // never inherit a conveniently similar old move.
+    assert(feed({hit(301,2,100)},902)[0].action==-1);
+    feed({birth(700,1,701,1,0,-1),birth(701,1,700,1,0,-1)});
+    assert(feed({hit(700,1,100)},903)[0].action==-1); // cycle
+    auto reflected=hit(500,1,100);reflected.owner=other;
+    assert(feed({reflected},904)[0].action==-1);
+    assert(feed({hit(500,1,100)},905,true)[0].action==-1);
+    // A cached collider from the previous body action is not the new move.
+    ja.boxAction=300;
+    assert(feed({ja},906)[0].action==-1);
+    // Runtime boosts are not rejected by an arbitrary neutral-table cap.
+    feed({birth(800,1,own,0,13,505),hit(800,1,9000)},907);
+    assert(tracker.best().actionId==505&&tracker.best().damage==9000);
+    sources.reset();
+    assert(feed({hit(800,1,500)},1)[0].action==-1);
+}
+
+static void testArchivedRoundRecordCannotBeRevokedByReusedCastID() {
+    whm::RecordTracker r;
+    r.observeDamage(1000,400,100,1,false,2000);
+    r.observeDamage(100,300,1,1,false,200);
+    r.observeDamage(101,300,2,1,false,200);
+    assert(r.best().damage==1000&&r.best().actionId==400);
+    r.observeDamage(1200,410,3,2,false,1300);
+    assert(r.best().damage==1200);
+    r.observeDamage(200,410,4,2,false,1300);
+    assert(r.best().damage==1000&&r.best().actionId==400);
+}
+
 int main() {
+    testNativePerHitAttribution();
+    testArchivedRoundRecordCannotBeRevokedByReusedCastID();
     testPanelLayouts();
     testHudRoundingModes();
     testProjectileRecords();
@@ -1021,7 +1105,7 @@ int main() {
     testDamageInferenceSuikaComboReplay();
     testRecordCeilingRejectsImpossibleCast();
     testChargedVariantLabels();
-    testDelayedSpellEstimateCanTakeBestHitCard();
+    testEstimatesNeverBecomeActualRecord();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
     assert(mergeSkillButtons("623B","j.623C")=="623B");

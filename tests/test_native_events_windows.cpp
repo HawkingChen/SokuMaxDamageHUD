@@ -57,7 +57,13 @@ void * __fastcall fakeFactory(void*,void*,void*,void*,short action,float x,float
 void * __fastcall fakeRoot(void *self,void*,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
  return factoryCreate(nullptr,nullptr,nullptr,self,action,x,y,dir,layer,data,size);
 }
-int main(){
+void __fastcall fakeAction(void *self,void*,short action) {
+ put(self,0x13c,static_cast<unsigned short>(action));
+}
+void __fastcall fakeActionSequence(void *self,void*,short action,short seq) {
+ fakeAction(self,nullptr,action);put(self,0x13e,static_cast<unsigned short>(seq));
+}
+int main(int argc,char **argv){
  put(p1.data(),0x13c,static_cast<unsigned short>(614));put(p1.data(),0x184,static_cast<short>(10000));
  put(p1.data(),0x4b4,static_cast<short>(4));put(p2.data(),0x184,static_cast<short>(9000));
  put(bullet.data(),0x168,static_cast<void*>(p1.data()));put(bullet.data(),0x16c,static_cast<void*>(p1.data()));
@@ -88,16 +94,50 @@ int main(){
  assert(events[0].owner!=events[0].victim);
  runInstruction(code,bullet.data(),p1.data(),p1.data(),5333,&hooked);
  assert(count==2&&events[1].damage==5333&&events[1].owner==events[1].victim);
- restore(patch);assert(std::memcmp(code,original,sizeof(original))==0);VirtualFree(code,0,MEM_RELEASE);
+ restore(patch);assert(std::memcmp(code,original,sizeof(original))==0);
+ // Scripted damage has the opposite ESI/EDI assignment at its ADD site.
+ assert(writePatch(patch,reinterpret_cast<void*>(&scriptedSettlementStub),true));
+ runInstruction(code,p2.data(),bullet.data(),p1.data(),4000,&hooked);
+ assert(count==3&&events[2].path==1&&events[2].damage==4000);
+ assert(events[2].victim==reinterpret_cast<std::uintptr_t>(p2.data()));
+ assert(events[2].object==reinterpret_cast<std::uintptr_t>(bullet.data()));
+ assert(std::memcmp(baseline.fx,hooked.fx,8)==0);
+ assert(std::memcmp(baseline.fx+32,hooked.fx+32,128)==0);
+ restore(patch);VirtualFree(code,0,MEM_RELEASE);
+ originalAction=reinterpret_cast<SetAction>(&fakeAction);
+ originalActionSequence=reinterpret_cast<SetActionSequence>(&fakeActionSequence);
+ setAction(p1.data(),nullptr,614);
+ const auto spellCast=actors.get(0);
+ assert(spellCast.valid()&&read<unsigned short>(p1.data(),0x13c)==614);
+ setAction(p1.data(),nullptr,664);
+ assert(actors.get(0).id==spellCast.id);
+ setActionSequence(p1.data(),nullptr,614,0);
+ assert(actors.get(0).id!=spellCast.id&&read<unsigned short>(p1.data(),0x13c)==614);
  // Native creator identity is carried through the original factory call,
  // even when the child's persistent parentObject is null.
  originalFactory=reinterpret_cast<Factory>(&fakeFactory);
  originalRoot=reinterpret_cast<Create>(&fakeRoot);originalObject=originalRoot;originalChild=originalRoot;
  rootCreate(p1.data(),nullptr,1010,123.5f,-17.25f,-1,2,nullptr,3);
  assert(events[count-1].kind==Event::Birth&&events[count-1].creator==reinterpret_cast<std::uintptr_t>(p1.data()));
+ assert(events[count-1].cast==actors.get(0).id&&events[count-1].castAction==614);
  objectCreate(parentObject.data(),nullptr,1010,123.5f,-17.25f,-1,2,nullptr,3);
  assert(events[count-1].creator==reinterpret_cast<std::uintptr_t>(parentObject.data()));
  assert(events[count-1].creatorGeneration==22&&events[count-1].parent==0&&creator==nullptr);
  end();auto oldCount=count;captureHit(bullet.data(),p2.data(),500);assert(count==oldCount);
+ if(argc>1) {
+  // Optional local integration check: map the real PE without executing its
+  // entry point, install all signature-checked patches, then restore them.
+  HMODULE game=LoadLibraryExA(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES);
+  assert(game);
+  installed=false;assert(install(reinterpret_cast<std::uintptr_t>(game)));
+  for(unsigned i=0;i<patches.size();++i) {
+   auto &p=patches[i];
+   assert(*static_cast<unsigned char*>(p.site)==(i==4||i==5?0xe8:0xe9));
+   restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
+   if(p.bridge)VirtualFree(p.bridge,0,MEM_RELEASE);
+  }
+  FreeLibrary(game);installed=false;
+  std::cout<<"All eight actual 1.10a PE signatures, patch installation and restoration passed\n";
+ }
  std::cout<<"Native hit amount/victim, null-parent creator chain, registers, flags, x87/SSE and displaced instruction passed\n";
 }
