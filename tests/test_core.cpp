@@ -232,6 +232,55 @@ static void testDelayedBirthAndDormantProjectileSafety() {
     assert(justNormal.origin.valid()&&justNormal.origin.action==307&&!justNormal.mixed);
 }
 
+static void testVisibleRecordsAndDelayedNoFlagDamage() {
+    using namespace whm;
+    // Regression: mixed damage MUST NOT leave the HUD's best record empty.
+    RecordTracker fallback;
+    fallback.observeDamage(777,-1,1,0,true);
+    assert(fallback.best().damage==777&&!fallback.best().attributed);
+    assert(fallback.best().actionId==-1);
+    fallback.observeDamage(420,-1,2,0,true);
+    assert(fallback.best().damage==777);
+    // Once a genuinely identified single cast exists, mixed damage cannot
+    // falsely replace it even if the mixture is numerically larger.
+    fallback.observeDamage(800,307,3,1);
+    assert(fallback.best().damage==800&&fallback.best().actionId==307);
+    fallback.observeDamage(3057,-1,4,0,true);
+    assert(fallback.best().damage==800&&fallback.best().actionId==307);
+    fallback.reset();
+    assert(fallback.best().damage==0);
+
+    ActorContact shot, idle, body;
+    shot.action=410;shot.animationFrame=12;
+    body.action=307;body.hitBoxes=true;body.limit=2;body.collision=1;
+    ProjectileContact p{1901,0,1,0,0,0,false,true};
+    HitAttribution pending;
+    // Merely creating a dormant bullet is NOT a damage event.
+    const auto spawn=pending.observeDetailed(shot,shot,{}, {p});
+    assert(!spawn.origin.valid());
+    pending.observe(shot,idle,{p},{p});
+    // Some explosions do not expose a changed collision flag when sampled
+    // around a whole engine update. An old, unique 5C is still attributable
+    // if it is the only remaining attack and real HP decreased.
+    RecordTracker delayed;
+    for(int i=0;i<3;++i) {
+        const auto unique=pending.observeDetailed(idle,idle,{p},{p});
+        assert(unique.origin.valid()&&unique.origin.action==410&&!unique.mixed);
+        delayed.observeDamage(i==0?600:i==1?680:1000,
+            unique.origin.action,10+i,unique.origin.instance);
+    }
+    assert(delayed.best().damage==2280&&delayed.best().actionId==410);
+    // 5C is still present when the body attack connects. The combined HP
+    // decrease is not a trustworthy j6A-only number, but it MUST be retained
+    // as observed (unassigned) damage rather than discarded.
+    const auto ambiguous=pending.observeDetailed(idle,body,{p},{p});
+    assert(ambiguous.mixed);
+    delayed.observeDamage(777,ambiguous.origin.action,15,ambiguous.origin.instance,
+                          ambiguous.mixed);
+    assert(delayed.best().actionId==410&&delayed.best().damage==2280);
+    assert(delayed.unattributedDamage()==777);
+}
+
 static void testSpellFollowupAttribution() {
     using namespace whm;
     // SokuLib Action.hpp: every SC200..219 has an ALT_EFFECT in 650..669.
@@ -439,6 +488,7 @@ int main() {
     testProjectileRecords();
     testSuikaDelayed5CWithJ6A();
     testDelayedBirthAndDormantProjectileSafety();
+    testVisibleRecordsAndDelayedNoFlagDamage();
     testSpellFollowupAttribution();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
