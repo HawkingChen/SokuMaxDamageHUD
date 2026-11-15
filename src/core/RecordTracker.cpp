@@ -4,7 +4,10 @@ namespace whm {
 void RecordTracker::reset() { casts_.clear(); best_ = {}; bestInstance_ = 0; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; comboPeak_ = 0; inferred_ = {}; }
 void RecordTracker::observeInferred(int action,int card,int damage,double confidence) {
     if(damage<=0||action<300||action>=690)return;
-    if(damage<inferred_.damage)return; // keep the strongest explanation
+    if(inferred_.valid&&damage<inferred_.damage)return; // keep the strongest explanation
+    // A larger but far less plausible explanation must not displace a solid
+    // one (the delayed 4000@0.90 SC vs a loose 5000@0.40 full-table fit).
+    if(inferred_.valid&&confidence+0.15<inferred_.confidence)return;
     inferred_={true,action,card,damage,confidence};
 }
 void RecordTracker::observeCombo(int comboDamage) {

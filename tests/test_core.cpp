@@ -944,6 +944,68 @@ static void testChargedVariantLabels() {
     assert(pickNotationByDamage(oni,1900)=="236[B]");
 }
 
+// Marisa's delayed 4-card SC (DamageTrace.log 15:09, frame 13506):
+//   dealt=4000 combo=1:4000 source=-1:0 mixed=1 hits=0 live=22 unresolved=22
+//   infer=614:4000 conf=90 explain=[single sc214 x2] best=500:1350
+// The caster is already idle (action=5) and every projectile is an orphan, so
+// HitAttribution can never produce an owner; the verified record stayed 1350
+// and the 4000 estimate was never allowed onto the BEST HIT card.
+static void testDelayedSpellEstimateCanTakeBestHitCard() {
+    using namespace whm;
+    const ActualRecord verified{1350,500,true,false,false};
+    const InferredRecord delayed{true,614,214,4000,0.90};
+    // The exact real-log situation: a high-confidence larger estimate wins.
+    assert(pickRecordSource(verified,delayed,4000,true)==RecordSource::Inferred);
+    // ...but best_ itself stays VERIFIED. Record pruning and future real hits
+    // must keep using measured data, never a simulation.
+    RecordTracker tracker;
+    tracker.observeDamage(1350,500,1000,1);
+    tracker.finish();
+    tracker.observeCombo(4000);
+    tracker.observeInferred(614,214,4000,0.90);
+    assert(tracker.best().attributed&&tracker.best().damage==1350);
+    assert(pickRecordSource(tracker.best(),tracker.inferred(),
+                            tracker.comboPeak(),tracker.hasObservedDamage())
+           ==RecordSource::Inferred);
+    // 5C/j.6A overlap must NOT regress: a tying or weaker estimate loses.
+    const ActualRecord cast5C{2280,410,true,false,false};
+    const InferredRecord tie{true,410,-1,2280,0.85};
+    const InferredRecord weaker{true,307,-1,775,0.90};
+    assert(pickRecordSource(cast5C,tie,3057,true)==RecordSource::Verified);
+    assert(pickRecordSource(cast5C,weaker,3057,true)==RecordSource::Verified);
+    // A weak guess must not replace a verified record.
+    const InferredRecord weakGuess{true,614,214,4000,0.50};
+    assert(pickRecordSource(verified,weakGuess,4000,true)==RecordSource::Verified);
+    // A simulated number above ANY observed damage is a fitting artefact.
+    const InferredRecord overshoot{true,614,214,5000,0.99};
+    assert(pickRecordSource(verified,overshoot,4000,true)==RecordSource::Verified);
+    // No verified record yet: estimate takes the slot (previous behaviour).
+    assert(pickRecordSource(ActualRecord{},delayed,4000,true)==RecordSource::Inferred);
+    // No usable estimate: authoritative combo total, never a fabricated name.
+    assert(pickRecordSource(ActualRecord{},InferredRecord{},4000,true)==RecordSource::Combo);
+    assert(pickRecordSource(verified,InferredRecord{},4000,true)==RecordSource::Verified);
+    // Untouched tracker: NO HIT RECORDED remains correct.
+    assert(pickRecordSource(ActualRecord{},InferredRecord{},0,false)==RecordSource::Empty);
+    // A larger but implausible guess cannot displace the 4000@0.90 estimate.
+    tracker.observeInferred(625,-1,5000,0.40);
+    assert(tracker.inferred().damage==4000&&tracker.inferred().confidence==0.90);
+    tracker.observeInferred(614,214,4500,0.88);
+    assert(tracker.inferred().damage==4500);
+    // Card captions: reserve " · COMMAND" first, ellipsize ONLY the name.
+    auto measure=[](const std::wstring &s){return static_cast<int>(s.size()*10);};
+    const auto fit=layoutCardTitle(L"Witch Ley Line · 214B",400,measure);
+    assert(!fit.split); // fits: unchanged rendering
+    const auto cut=layoutCardTitle(L"Meteonic Debris · 236[B/C]",200,measure);
+    assert(cut.split&&!cut.tailEllipsis);
+    assert(cut.head==L"Meteonic Debris");
+    assert(cut.tail==L" · 236[B/C]");
+    assert(cut.headWidth>0&&cut.headWidth<200);
+    const auto tiny=layoutCardTitle(L"Meteonic Debris · 236[B/C]",60,measure);
+    assert(tiny.split&&tiny.tailEllipsis); // degenerate: still protect suffix
+    const auto noCmd=layoutCardTitle(L"Very Long Spell Name Without Command",60,measure);
+    assert(!noCmd.split);
+}
+
 int main() {
     testPanelLayouts();
     testHudRoundingModes();
@@ -959,6 +1021,7 @@ int main() {
     testDamageInferenceSuikaComboReplay();
     testRecordCeilingRejectsImpossibleCast();
     testChargedVariantLabels();
+    testDelayedSpellEstimateCanTakeBestHitCard();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
     assert(mergeSkillButtons("623B","j.623C")=="623B");

@@ -25,6 +25,36 @@ struct InferredRecord {
     double confidence = 0.0;
 };
 
+// Which card the BEST HIT slot should render. Kept as a pure function so the
+// priority rules are unit-testable instead of being buried in Win32 paint code.
+enum class RecordSource { Empty, Verified, Inferred, Combo };
+constexpr double kInferenceDisplayFloor = 0.35;   // minimum confidence to show at all
+constexpr double kInferenceOutrankFloor = 0.60;   // minimum confidence to beat a real record
+
+inline RecordSource pickRecordSource(const ActualRecord &best,
+                                    const InferredRecord &inferred,
+                                    int comboPeak, bool anyDamage) {
+    const int verified = best.attributed ? best.damage : 0;
+    const bool usable = inferred.valid &&
+        inferred.confidence >= kInferenceDisplayFloor && inferred.damage > 0;
+    // A DELAYED spell card (Marisa's 4-card SC) detonates long after its
+    // caster left the animation, so HitAttribution reports mixed/orphan and
+    // the 4000 damage never reaches best_. A high-confidence reverse-solved
+    // cast must then be allowed to take the card -- otherwise the panel keeps
+    // showing an older, much smaller verified hit forever. Three guards keep
+    // this honest: high confidence, strictly larger than the verified record,
+    // and never larger than the game's own observed combo peak (a bigger
+    // number is a fitting artefact, not a hit). best_ is NEVER overwritten.
+    if (usable && inferred.confidence >= kInferenceOutrankFloor &&
+        inferred.damage > verified &&
+        (comboPeak <= 0 || inferred.damage <= comboPeak))
+        return RecordSource::Inferred;
+    if (verified > 0) return RecordSource::Verified;
+    if (usable) return RecordSource::Inferred; // no verified record yet
+    if (anyDamage) return RecordSource::Combo;
+    return RecordSource::Empty;
+}
+
 // Single-cast damage records. The runtime supplies observed damage and a
 // source instance from HitAttribution, so delayed/multi-hit projectiles keep
 // their casting action. observe() retains the older HP-only API for callers

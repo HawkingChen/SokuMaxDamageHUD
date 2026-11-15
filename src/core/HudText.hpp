@@ -139,6 +139,39 @@ inline const char *chargedSuffix(HudLanguage lang) {
     return kSuffix[(i >= 0 && i < 3) ? i : 0];
 }
 
+struct CardTitleLayout {
+    bool split = false;         // false: draw the whole caption as one string
+    std::wstring head;          // the (truncatable) move name
+    std::wstring tail;          // " · COMMAND" plus any charge tag
+    int headWidth = 0;          // pixels left for the name
+    bool tailEllipsis = false;  // even the suffix alone does not fit
+};
+// Card captions are "NAME · COMMAND (+ charge tag)". Windows' DT_END_ELLIPSIS
+// truncates the END, which hides the command ("Meteonic Debris · 236[...").
+// Reserve the command suffix first and ellipsize only the NAME. `measure`
+// returns the pixel width of a string in the target font.
+template <class Measure>
+inline CardTitleLayout layoutCardTitle(const std::wstring &text, int width,
+                                       Measure measure) {
+    CardTitleLayout out;
+    if (width <= 0) return out;
+    if (measure(text) <= width) return out;   // everything fits: keep old look
+    const std::wstring sep = L" · ";
+    const std::size_t cut = text.rfind(sep);  // LAST separator protects the suffix
+    if (cut == std::wstring::npos) return out; // no command to protect
+    out.head = text.substr(0, cut);
+    out.tail = text.substr(cut);
+    const int tailWidth = measure(out.tail) + 6; // padding for GDI rounding
+    out.split = true;
+    if (tailWidth >= width) {
+        out.head.clear();
+        out.tailEllipsis = true;  // degenerate: ellipsize the suffix itself
+        return out;
+    }
+    out.headWidth = width - tailWidth;
+    return out;
+}
+
 struct NotationCandidate {
     std::string notation;   // keeps the brackets for a charged variant
     int damage = 0;         // static neutral damage of that variant

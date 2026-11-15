@@ -2,6 +2,60 @@
 
 本文件适用于测试分支 `agent/gpt6-suika-overlap-diagnostics-20261115` 及其修复分支。只读观测游戏运行状态，不改变战斗伤害或操作。**不自动发布新 Release**。
 
+## 延迟符卡 4000 伤害没进「最痛记录」（15:09 实机反馈）
+
+用户：用魔理沙放了一个**延迟型 4 卡 SC**，炸了非常多血，但没有被计入最痛记录。
+
+### 证据（DamageTrace.log 最后一帧，336 行）
+
+```
+frame=13506 char=1 action=5>5 seq=0>0 hp=10000>6000 dealt=4000
+combo=4:1125>1:4000 source=-1:0 mixed=1 hits=0 possible=0
+live=22 unresolved=22 snapshot=0/0 list=22/22 owned=22/22
+crate=0.5 profiles=1677 infer=614:4000 conf=90
+explain=[single sc214 x2] best=500:1350
+```
+
+`config/HitProfiles.tsv` 里 `1|614|214|spell|sc214|4000|4000|2|980` —— 魔理沙的 4 卡 SC 静态值就是 4000。
+`DamageInference` **算对了**（残差 0，0.90 = 完美拟合扣掉 0.10「无在场证据」惩罚），
+`observeInferred()` 也把 `614/214/4000/0.90` 存进了 `inferred_`。
+
+### 根因：显示优先级，不是推断失败
+
+`composeHUD()` 原来写死 `if(best.attributed&&best.damage>0) ... else if(inferredUsable)`：
+只要**本局曾经**打中过任意一招（这里是 `500:1350`），推定卡就永远排在后面。
+延迟 SC 施法者早已回到 `action=5` 站立、22 发弹幕全是 orphan，`HitAttribution`
+**结构上不可能**给出 owner，于是 `best_` 永远停在 1350，4000 永远上不了卡。
+
+### 修法：把优先级抽成可测的纯函数
+
+`RecordTracker.hpp` 新增 `RecordSource` / `pickRecordSource(best, inferred, comboPeak, anyDamage)`，
+`ModMain.cpp` 只按返回值渲染**已验证 / 推定 / 连段 / 空白**四种卡。推定卡允许覆盖显示，
+但必须同时满足三道闸：
+
+1. `confidence >= 0.60`（高于 0.35 的「可显示」下限）；延迟 SC 的 0.90 通过；
+2. `inferred.damage > best.damage`（严格大于）；5C/J6A 的 `2280 vs 2280` 仍是实测卡，不回退；
+3. `inferred.damage <= comboPeak`（游戏自己的连段峰值）；任何超过全部观测伤害的数字都是拟合伪影。
+
+**不变量不变**：推定值只写 `inferred_`，`best_` 永远是实测单招。因此
+`inferenceCanBeatRecord()` 的记录上界剪枝、后续真实命中的排行，仍只用真实数据。
+`observeInferred()` 另加保护：更大但置信低 0.15 以上的猜测不能顶掉已存的可靠推定。
+推定卡照旧带「≈」与「（推定）/ (EST.)」，不会冒充实测。
+
+回归测试 `testDelayedSpellEstimateCanTakeBestHitCard()` 逐条覆盖上面 12 个分支
+（含实机 1350/4000、5C 平局、弱置信、超峰值、空白局、推定不被低置信覆盖）。
+
+## 长招式名把出招指令截掉（06:08 截图反馈）
+
+用户截图：左侧「最痛必杀技」显示 `Meteonic Debris · 236[...`，看不到完整指令。
+根因是 `StyledPanel.hpp::write()` 对**整串**用 `DT_END_ELLIPSIS`，Windows 一律砍尾部。
+
+修法：`HudText.hpp` 新增 `CardTitleLayout` / `layoutCardTitle()`，以最后一个 ` · `
+为界拆成 `head`（招式名）与 `tail`（` · COMMAND` 及蓄力标签）；
+`StyledPanel.hpp::writeCardTitle()` 用 `GetTextExtentPoint32W()` 先量出并锁定 tail 宽度，
+只对 head 用 `DT_END_ELLIPSIS`，tail **绝不截断**；整串放得下时保持原渲染不变，
+连 tail 都放不下的极端情况才退化为对 tail 本身省略。两处卡片标题（理论卡 + 最痛记录）都改用它。
+
 ## 蓄力招式缺席「最痛必杀技」候选（13:18 实机反馈）
 
 用户：萃香把元鬼玉蓄满打出 **2200 最痛伤害**，但「最痛必杀技」卡片显示 **623 地灵-密-**（1483），

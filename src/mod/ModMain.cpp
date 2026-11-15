@@ -593,15 +593,19 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
     }
     const auto &best=g_record.best();
     const auto &inferred=g_record.inferred();
-    // BEST HIT prefers a VERIFIED single cast. When the whole combo is mixed
-    // or unresolved, DamageInference reverse-solves the game's cumulative
-    // combo damage into the most likely cast; show THAT CAST'S OWN share,
-    // never the whole 3057 combo as if it were one move. The card is marked
-    // approximate/estimated so a simulation is never passed off as measured.
-    const bool inferredUsable=inferred.valid&&inferred.confidence>=0.35&&
-                              inferred.damage>0;
-    // A verified single cast always wins over a simulated explanation.
-    if(best.attributed&&best.damage>0){
+    // BEST HIT ranks verified single casts. When a combo is mixed or
+    // unresolved, DamageInference reverse-solves the game's cumulative combo
+    // damage into the most likely cast; show THAT CAST'S OWN share, never the
+    // whole 3057 combo as one move. The card is marked approximate/estimated
+    // so a simulation is never passed off as measured.
+    // Delayed spells detonate after their owner is gone (Marisa's 4-card SC
+    // logged 4000@0.90 with best=500:1350), so a high-confidence LARGER
+    // simulated cast must be allowed to outrank an older verified record.
+    // best_ is NEVER overwritten: pickRecordSource() owns the guards and is
+    // unit-tested, so record pruning and later real hits still use real data.
+    const whm::RecordSource recordSource=whm::pickRecordSource(
+        best,inferred,g_record.comboPeak(),g_record.hasObservedDamage());
+    if(recordSource==whm::RecordSource::Verified){
         const int action=best.actionId;
         const int card=whm::cardForAction(view.character,action);
         const MoveLabel label=labelForAction(*own,action,best.damage);
@@ -609,7 +613,7 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                label.notation,label.notation,label.fallback,false);
         rec.names=label.names;
         view.record=rec;
-    } else if(inferredUsable) {
+    } else if(recordSource==whm::RecordSource::Inferred) {
         const int action=inferred.actionId;
         const int card=inferred.card>=0?inferred.card:
                        whm::cardForAction(view.character,action);
@@ -622,7 +626,7 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         for(int i=0;i<3;++i)
             if(!rec.names[i].empty())rec.names[i]+=kEstimateTag[i];
         view.record=rec;
-    } else if(g_record.hasObservedDamage()) {
+    } else if(recordSource==whm::RecordSource::Combo) {
         // Last resort only: no verified cast and the simulation failed.
         // Show the authoritative combo peak with an honest COMBO label.
         view.record.damage=g_record.comboPeak()>0?
