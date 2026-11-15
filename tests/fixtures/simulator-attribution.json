@@ -1,0 +1,156 @@
+{
+  "source": "https://soku.cleista.cc/practice",
+  "frameDataSource": "https://soku.cleista.cc/framedata",
+  "engineSha256": "93f49ebae8f9ebb06f2a08622379cf14d0ccc33cf349e073428a8d89d6770734",
+  "fixtureSha256": "ad7b0b3f345784d6b69f79a1fc47e924318f1798610ee6454fe11ef76c8a9553",
+  "scope": "Forced entries, max skill level, two distances, charged button held 60 updates; single-cast boundaries; not native game verification",
+  "nativeVerified": false,
+  "cases": 3916,
+  "damageObserved": 2471,
+  "noDamageObserved": 1445,
+  "hits": 15417,
+  "characters": [
+    {
+      "character": "reimu",
+      "cases": 202,
+      "damageObserved": 127,
+      "noDamageObserved": 75,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "marisa",
+      "cases": 236,
+      "damageObserved": 154,
+      "noDamageObserved": 82,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "sakuya",
+      "cases": 192,
+      "damageObserved": 125,
+      "noDamageObserved": 67,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "alice",
+      "cases": 194,
+      "damageObserved": 110,
+      "noDamageObserved": 84,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "patchouli",
+      "cases": 224,
+      "damageObserved": 141,
+      "noDamageObserved": 83,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "youmu",
+      "cases": 154,
+      "damageObserved": 91,
+      "noDamageObserved": 63,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "remilia",
+      "cases": 162,
+      "damageObserved": 107,
+      "noDamageObserved": 55,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "yuyuko",
+      "cases": 172,
+      "damageObserved": 130,
+      "noDamageObserved": 42,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "yukari",
+      "cases": 196,
+      "damageObserved": 106,
+      "noDamageObserved": 90,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "suika",
+      "cases": 188,
+      "damageObserved": 121,
+      "noDamageObserved": 67,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "reisen",
+      "cases": 200,
+      "damageObserved": 122,
+      "noDamageObserved": 78,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "aya",
+      "cases": 204,
+      "damageObserved": 128,
+      "noDamageObserved": 76,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "komachi",
+      "cases": 182,
+      "damageObserved": 96,
+      "noDamageObserved": 86,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "iku",
+      "cases": 202,
+      "damageObserved": 117,
+      "noDamageObserved": 85,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "tenshi",
+      "cases": 178,
+      "damageObserved": 107,
+      "noDamageObserved": 71,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "sanae",
+      "cases": 186,
+      "damageObserved": 139,
+      "noDamageObserved": 47,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "cirno",
+      "cases": 202,
+      "damageObserved": 139,
+      "noDamageObserved": 63,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "meiling",
+      "cases": 172,
+      "damageObserved": 99,
+      "noDamageObserved": 73,
+      "casesWithDiagnostics": 0
+    },
+    {
+      "character": "utsuho",
+      "cases": 230,
+      "damageObserved": 149,
+      "noDamageObserved": 81,
+      "casesWithDiagnostics": 2
+    },
+    {
+      "character": "suwako",
+      "cases": 240,
+      "damageObserved": 163,
+      "noDamageObserved": 77,
+      "casesWithDiagnostics": 10
+    }
+  ],
+  "syntheticScenarioRows": 17,
+  "syntheticScenarioPolicy": "Enumerated without action events; require command-input scenarios, not native setAction"
+}

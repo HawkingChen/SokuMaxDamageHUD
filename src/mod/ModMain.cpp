@@ -23,6 +23,9 @@
 #include "HitSnapshots.hpp"
 #include "GameAssets.hpp"
 #include "NativeEvents.hpp"
+#include "NativeRecording.hpp"
+#include "RollbackCallbacks.hpp"
+#include <memory>
 
 #include <windows.h>
 #include <algorithm>
@@ -104,6 +107,64 @@ bool g_damageTraceEnabled = false;
 std::ofstream g_damageTraceFile;
 bool g_nativeTraceEnabled = false;
 std::ofstream g_nativeTraceFile;
+// Giuroll restores game memory after prediction. HUD state must participate
+// in that SAME transaction, including events captured before an outer process
+// returns. User preferences and graphics resources are deliberately excluded.
+struct DamageCoreCheckpoint {
+    whm::NativeAttribution sources;
+    whm::RecordTracker record;
+    DamageCoreCheckpoint():sources(g_nativeAttribution),record(g_record){}
+};
+std::shared_ptr<const DamageCoreCheckpoint> g_rollbackCore;
+std::uint64_t g_rollbackEpoch=0,g_rollbackLoads=0;
+bool g_rollbackAttached=false;
+int g_captureBeforeHP=10000;
+std::uintptr_t g_captureTarget=0;
+struct HudRollbackBridge {
+    struct Snapshot {
+        std::shared_ptr<const DamageCoreCheckpoint> core;
+        whm::native::Snapshot stream;
+        std::uint64_t epoch=0;
+        unsigned lastPhase=0;
+        int beforeHP=0;
+        std::uintptr_t target=0;
+        bool activeSave=false,eligible=false;
+    };
+    static Snapshot capture() {
+        if(!g_lastManager||g_lastLocalSide==whm::kNoLocalPlayer)return {};
+        // All snapshots inside one outer process share the processed core;
+        // only their pending event stream differs.
+        if(!g_rollbackCore)g_rollbackCore=std::make_shared<DamageCoreCheckpoint>();
+        return {g_rollbackCore,whm::native::snapshot(),g_rollbackEpoch,g_lastFrame,
+                g_captureBeforeHP,g_captureTarget,whm::native::active,
+                g_lastManager&&g_lastLocalSide!=whm::kNoLocalPlayer};
+    }
+    static bool applicable(const Snapshot &s) {return s.eligible&&s.epoch==g_rollbackEpoch;}
+    static void restorePre(const Snapshot &s,std::uintptr_t logicalFrame) {
+        if(!applicable(s))return;
+        g_nativeAttribution=s.core->sources;g_record=s.core->record;
+        if(!whm::native::restore(s.stream)){failed();return;}
+        g_rollbackCore=s.core;g_lastFrame=s.lastPhase;
+        g_captureBeforeHP=s.beforeHP;g_captureTarget=s.target;
+        g_lastRefresh=0;++g_rollbackLoads;
+        if(g_nativeTraceFile)g_nativeTraceFile<<"# GIUROLL restore logical="<<logicalFrame
+            <<" pending="<<whm::native::count<<" consumed="<<whm::native::consumed<<"\n";
+    }
+    static void restorePost(const Snapshot &s) {
+        if(!applicable(s))return;
+        // A checkpoint outside the capture scope already includes its hits.
+        // Start HP corroboration at the restored game's CURRENT HP, not the
+        // abandoned future or an already processed frame's old baseline.
+        if(!s.activeSave&&g_captureTarget)
+            g_captureBeforeHP=whm::native::read<short>(reinterpret_cast<void*>(g_captureTarget),0x184);
+    }
+    static void failed() noexcept {
+        g_record.reset();g_nativeAttribution.reset();g_rollbackCore.reset();
+        whm::native::count=whm::native::consumed=whm::native::dropped=0;
+        whm::native::actors.reset();whm::native::clearGhostCommands();g_lastRefresh=0;
+        OutputDebugStringA("SokuMaxDamageHUD: rollback checkpoint unavailable; cleared damage records.\n");
+    }
+};
 std::vector<whm::Move> g_probeCache;
 int g_probeCharacter = -1;
 const void *g_probeDataSource = nullptr;
@@ -147,8 +208,8 @@ void flushNativeEvents() {
     auto &out=g_nativeTraceFile;
     for(unsigned i=0;i<whm::native::count;++i) {
         const auto &e=whm::native::events[i];
-        out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":"ACTION")
-           <<" frame="<<e.frame<<" object="<<std::hex<<e.object<<std::dec
+        out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":e.kind==whm::native::Event::Rebind?"REBIND":"ACTION")
+           <<" frame="<<e.frame<<" logic="<<e.logicFrame<<" object="<<std::hex<<e.object<<std::dec
            <<":"<<e.generation<<" owner="<<std::hex<<e.owner
            <<" ally="<<e.ally<<" victim="<<e.victim
            <<" creator="<<e.creator<<std::dec<<":"<<e.creatorGeneration
@@ -1087,11 +1148,16 @@ void drawCardIcon(const SokuLib::v2::Player &player, int cardId, int y) {
 }
 
 int __fastcall onProcess(SokuLib::BattleManager *mgr) {
+    if(!g_rollbackAttached&&whm::GiurollBridge<HudRollbackBridge>::attach()) {
+        g_rollbackAttached=true;
+        if(g_nativeTraceFile)g_nativeTraceFile<<"# Giuroll rollback callbacks attached\n";
+    }
     // Take the victim's HP before and after the engine's own update. Never write into game state.
     const int side = ownSide();
     // An online side change may reuse the same BattleManager address.
     // Clear all cached cards, player stats and hit records on ANY local side change.
     if (g_lastManager != mgr || g_lastLocalSide != side) {
+        ++g_rollbackEpoch;g_rollbackCore.reset();
         g_lastManager = mgr;
         g_lastLocalSide = side;
         g_panelWanted.store(false);
@@ -1118,6 +1184,7 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     }
     // Keep the best hit across round transitions; only re-create the HUD.
     if (mgr->frameCount < g_lastFrame) {
+        g_rollbackCore.reset();
         g_record.nextRound();
         g_lastRefresh = 0;
         g_hitAttribution.reset();
@@ -1144,7 +1211,10 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     whm::ProjectileSnapshotDiag projectilePreDiag;
     const auto objectsBefore=g_damageTraceEnabled?whm::projectileContacts(*ownBefore,&projectilePreDiag):std::vector<whm::ProjectileContact>{};
     const auto comboBefore=whm::comboReading(*ownBefore,*targetBefore);
+    g_captureBeforeHP=before;
+    g_captureTarget=reinterpret_cast<std::uintptr_t>(targetBefore);
     whm::native::begin(mgr->frameCount,viewPlayer(mgr,0),viewPlayer(mgr,1));
+    const auto rollbackBefore=g_rollbackLoads;
     const int result = (mgr->*g_originalProcess)();
     whm::native::end();
     if(g_nativeTraceEnabled)flushNativeEvents();
@@ -1166,17 +1236,15 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const int dealt=whm::observedDamage(before,after,comboBefore,comboAfter);
     // Actual records come only from per-hit engine events. HP/combos are
     // diagnostic corroboration, never a numerical guess of a move's name.
+    const auto pendingEvents=std::span<const whm::NativeEvent>(whm::native::events.data(),whm::native::count)
+        .subspan(whm::native::consumed);
     const auto nativeHits=g_nativeAttribution.consume(
-        std::span<const whm::NativeEvent>(whm::native::events.data(),whm::native::count),
+        pendingEvents,
         reinterpret_cast<std::uintptr_t>(attacker),whm::native::dropped!=0);
-    for(const auto &h:nativeHits)
-        g_record.observeDamage(h.damage,h.action,mgr->frameCount,h.instance,false,0,h.self);
-    // Unsupported or bypassed engine paths still retain evidence of damage,
-    // but a frame's net HP loss is never attributed to the current animation.
-    if(nativeHits.empty()) {
-        const int unknown=std::max(std::max(0,before-after),std::max(0,ownHPBefore-attacker->HP));
-        if(unknown>0)g_record.observeDamage(unknown,-1,mgr->frameCount,0,true);
-    }
+    whm::recordNativeFrame(g_record,nativeHits,
+        pendingEvents,reinterpret_cast<std::uintptr_t>(target),mgr->frameCount,g_captureBeforeHP,after);
+    whm::native::consumed=whm::native::count;
+    if(!pendingEvents.empty()||g_captureBeforeHP>after)g_rollbackCore.reset();
     // Opt-in local diagnostics. Snapshots corroborate native events; neither
     // the old contact heuristic nor numeric inference supplies a record.
     if(g_damageTraceEnabled && g_damageTraceFile &&
@@ -1186,7 +1254,7 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         (static_cast<int>(attacker->characterIndex)==9 &&
          (actorBefore.action==307 || actorAfter.action==307)))) {
         auto &out=g_damageTraceFile;
-        out<<"frame="<<mgr->frameCount<<" char="<<static_cast<int>(attacker->characterIndex)
+        out<<"frame="<<mgr->frameCount<<" rollback="<<(g_rollbackLoads-rollbackBefore)<<" char="<<static_cast<int>(attacker->characterIndex)
            <<" action="<<actorBefore.action<<">"<<actorAfter.action
            <<" seq="<<actorBefore.sequence<<">"<<actorAfter.sequence
            <<" hp="<<before<<">"<<after<<" ownHP="<<ownHPBefore<<">"<<attacker->HP<<" dealt="<<dealt
@@ -1231,6 +1299,7 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
 }
 
 void __fastcall onExit(SokuLib::BattleManager *mgr) {
+    ++g_rollbackEpoch;g_rollbackCore.reset();g_captureTarget=0;
     g_panelWanted.store(false);
     g_record.reset();
     g_hitAttribution.reset();
@@ -1267,12 +1336,12 @@ void loadSettings() {
     if(g_damageTraceFile.is_open())g_damageTraceFile.close();
     if(g_damageTraceEnabled) {
         g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
-        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.10; numerical inference disabled\n";
+        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.12; numerical inference disabled\n";
     }
     g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
     if(g_nativeTraceEnabled) {
         g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
-        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.10; all-character factories and update contexts\n";
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.12; native damage, helper commands, Giuroll state callbacks\n";
         else g_nativeTraceEnabled=false;
     }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
@@ -1343,6 +1412,7 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE self, HMODULE) {
     DWORD ignore = 0;
     VirtualProtect(reinterpret_cast<void *>(RDATA_SECTION_OFFSET), RDATA_SECTION_SIZE, old, &ignore);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+    whm::native::logicClock=reinterpret_cast<const unsigned*>(0x8985d8);
     const bool nativeOK=whm::native::install();
     if(g_nativeTraceFile) {
         g_nativeTraceFile<<"# nativeHooks="<<(nativeOK?"installed":"DISABLED: unsupported or modified code / allocation failure")<<"\n";

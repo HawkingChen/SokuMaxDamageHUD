@@ -6,6 +6,8 @@ A damage reference HUD for **Touhou Hisoutensoku v1.10a**. A companion panel bel
 
 **Uses hooks to observe combat without changing battle values.** Loaded by SokuModLoader, the mod uses game-function hooks and vtable callbacks to collect runtime state and events for estimates, damage attribution and display. These hooks modify function jumps or callbacks inside the game process; they do not change actual damage, character stats or other battle state, modify network packets, interfere with the random number generator (RNG), or send gameplay inputs. Image extraction leaves the original game archives untouched; generated images and UI preferences are stored in the mod’s own folder.
 
+**Giuroll 0.6.18 compatibility:** damage records participate in its public rollback callbacks, so replayed predictions do not accumulate twice. No Giuroll or launcher configuration changes are required.
+
 ![Full interface: game and companion HUD](docs/hud-meiling.png)
 
 *Full interface*
