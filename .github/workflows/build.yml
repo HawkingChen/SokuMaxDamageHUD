@@ -33,6 +33,11 @@ jobs:
             $p = Join-Path $root $name
             if (!(Test-Path -LiteralPath $p) -or (Get-Item -LiteralPath $p).Length -eq 0) { throw "Missing package file: $name" }
           }
+          # Public packages must never enable developer trace logging.
+          $settings = Get-Content (Join-Path $root 'SokuMaxDamageHUD.ini') -Raw
+          foreach ($key in @('EnableDamageTrace','EnableNativeSettlementTrace')) {
+            if ($settings -notmatch "(?m)^\s*$key\s*=\s*0\s*$") { throw "Diagnostic logging must default OFF: $key" }
+          }
           # Charged variants must ship with the static table, or the HUD can
           # never rank a 2200 charged Oni Spirit Bomb above a 1483 623 Gnome.
           $chargedLines = @(Get-Content (Join-Path $root 'FrameData.txt') |
