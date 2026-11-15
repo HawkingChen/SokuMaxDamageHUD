@@ -14,11 +14,24 @@ inline const void *players[2]{};
 inline bool active=false,installed=false;
 inline DWORD gameThread=0;
 inline thread_local void *creator=nullptr;
+inline thread_local void *updating=nullptr;
+inline thread_local std::uintptr_t creatorCaller=0;
+using Update=void (__thiscall *)(void*);
+inline std::array<Update,20> originalUpdates{};
+struct UpdateScope {
+ void *prior;
+ explicit UpdateScope(void *p):prior(updating){updating=p;}
+ ~UpdateScope(){updating=prior;}
+};
 template<typename T> inline T read(const void *p,unsigned offset) noexcept {
  T v{};if(p)std::memcpy(&v,static_cast<const char*>(p)+offset,sizeof(v));return v;
 }
 inline bool isPlayer(const void *p){return p&&(p==players[0]||p==players[1]);}
 inline bool capturing(){return active&&GetCurrentThreadId()==gameThread;}
+template<unsigned I> inline void __fastcall objectUpdate(void *self,void*) {
+ if(!capturing()){originalUpdates[I](self);return;}
+ UpdateScope scope(self);originalUpdates[I](self);
+}
 inline void append(Event e) noexcept {if(count<events.size())events[count++]=e;else ++dropped;}
 inline void begin(unsigned f,const void *left,const void *right) noexcept {
  if(players[0]!=left || players[1]!=right)actors.reset();
@@ -118,23 +131,26 @@ using Factory = void *(__thiscall *)(void*,void*,void*,short,float,float,int,int
 inline Create originalRoot=nullptr,originalObject=nullptr,originalChild=nullptr;
 inline Factory originalFactory=nullptr;
 struct CreatorScope {
- void *prior;
- explicit CreatorScope(void *p):prior(creator){creator=p;}
- ~CreatorScope(){creator=prior;}
+ void *prior;std::uintptr_t priorCaller;
+ explicit CreatorScope(void *p,std::uintptr_t caller=0):prior(creator),priorCaller(creatorCaller){creator=p;creatorCaller=caller;}
+ ~CreatorScope(){creator=prior;creatorCaller=priorCaller;}
 };
 inline void *__fastcall rootCreate(void *self,void*,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
- CreatorScope scope(self);return originalRoot(self,action,x,y,dir,layer,data,size);
+ // The player can be called as a spawn service by a delayed projectile.
+ // Preserve the currently executing projectile as the causal creator.
+ void *producer=capturing()&&updating&&read<void*>(updating,0x168)==self?updating:self;
+ CreatorScope scope(producer,reinterpret_cast<std::uintptr_t>(_ReturnAddress()));return originalRoot(self,action,x,y,dir,layer,data,size);
 }
 inline void *__fastcall objectCreate(void *self,void*,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
- CreatorScope scope(self);return originalObject(self,action,x,y,dir,layer,data,size);
+ CreatorScope scope(self,reinterpret_cast<std::uintptr_t>(_ReturnAddress()));return originalObject(self,action,x,y,dir,layer,data,size);
 }
 inline void *__fastcall childCreate(void *self,void*,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
- CreatorScope scope(self);return originalChild(self,action,x,y,dir,layer,data,size);
+ CreatorScope scope(self,reinterpret_cast<std::uintptr_t>(_ReturnAddress()));return originalChild(self,action,x,y,dir,layer,data,size);
 }
 inline void *__fastcall factoryCreate(void *self,void*,void *parent,void *ally,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
  if(!capturing())return originalFactory(self,parent,ally,action,x,y,dir,layer,data,size);
- const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
- void *producer=parent?parent:creator;
+ const auto caller=creatorCaller?creatorCaller:reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+ void *producer=parent?parent:creator?creator:updating;
  const auto producerGeneration=producer&&!isPlayer(producer)?read<unsigned>(producer,0x350):0;
  const auto root=isPlayer(producer)?actors.get(side(producer)):whm::NativeCast{};
  void *result=originalFactory(self,parent,ally,action,x,y,dir,layer,data,size);
@@ -155,6 +171,22 @@ inline void *__fastcall factoryCreate(void *self,void*,void *parent,void *ally,s
 }
 struct Patch {void *site=nullptr,*bridge=nullptr;unsigned length=0;std::array<unsigned char,8> original{};};
 inline std::array<Patch,8> patches{};
+inline std::array<Patch,20> updatePatches{};
+inline const std::array<std::array<std::uintptr_t,2>,20> updateSites{{
+ {0x85bebc,0x4b1070},{0x85c2ec,0x4d5200},{0x85c674,0x501be0},{0x85c964,0x527280},
+ {0x85cc9c,0x558df0},{0x85cf4c,0x57d0b0},{0x85d1f4,0x59dfb0},{0x85d494,0x5bbb00},
+ {0x85d72c,0x5e1670},{0x85d9f4,0x60c200},{0x85dccc,0x636360},{0x85e1ac,0x6800f0},
+ {0x85df1c,0x65a290},{0x85e414,0x69e9d0},{0x85e68c,0x6c3950},{0x85ef5c,0x74f190},
+ {0x85ea24,0x6fdff0},{0x85ecac,0x7304d0},{0x85f55c,0x7ba1f0},{0x85f22c,0x7876d0}
+}};
+inline void *updateHooks[]={
+reinterpret_cast<void*>(&objectUpdate<0>),reinterpret_cast<void*>(&objectUpdate<1>),reinterpret_cast<void*>(&objectUpdate<2>),reinterpret_cast<void*>(&objectUpdate<3>),reinterpret_cast<void*>(&objectUpdate<4>),reinterpret_cast<void*>(&objectUpdate<5>),reinterpret_cast<void*>(&objectUpdate<6>),reinterpret_cast<void*>(&objectUpdate<7>),reinterpret_cast<void*>(&objectUpdate<8>),reinterpret_cast<void*>(&objectUpdate<9>),reinterpret_cast<void*>(&objectUpdate<10>),reinterpret_cast<void*>(&objectUpdate<11>),reinterpret_cast<void*>(&objectUpdate<12>),reinterpret_cast<void*>(&objectUpdate<13>),reinterpret_cast<void*>(&objectUpdate<14>),reinterpret_cast<void*>(&objectUpdate<15>),reinterpret_cast<void*>(&objectUpdate<16>),reinterpret_cast<void*>(&objectUpdate<17>),reinterpret_cast<void*>(&objectUpdate<18>),reinterpret_cast<void*>(&objectUpdate<19>)
+};
+inline bool writePointer(Patch &p,void *value) {
+ DWORD old=0;if(!VirtualProtect(p.site,p.length,PAGE_EXECUTE_READWRITE,&old))return false;
+ std::memcpy(p.site,&value,sizeof(value));DWORD ignored;
+ VirtualProtect(p.site,p.length,old,&ignored);return true;
+}
 inline void jump(void *destination,void *target) {
  auto p=static_cast<unsigned char*>(destination);p[0]=0xe9;
  const auto delta=static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(target)-reinterpret_cast<std::uintptr_t>(p)-5);
@@ -189,6 +221,17 @@ inline bool install(std::uintptr_t imageBase=0x400000) {
   if(std::memcmp(p.site,expected,p.length)!=0)return false;
   std::memcpy(p.original.data(),p.site,p.length);
  }
+ // Update dispatch identifies the object whose script invoked a player
+ // spawn service. Validate every slot before applying any code/table patch.
+ for(unsigned i=0;i<updatePatches.size();++i) {
+  auto &p=updatePatches[i];p.site=reinterpret_cast<void*>(imageBase+updateSites[i][0]-0x400000+10*4);p.length=4;
+  // 1.10a is a fixed-base EXE; its vtable entries remain absolute even
+  // when the optional test maps the PE at a different address.
+  const auto expected=updateSites[i][1];
+  if(read<std::uintptr_t>(p.site,0)!=expected)return false;
+  std::memcpy(p.original.data(),p.site,p.length);
+  originalUpdates[i]=reinterpret_cast<Update>(expected);
+ }
  for(unsigned i=0;i<8;++i) {
   if(i==4||i==5)continue;
   auto &p=patches[i];p.bridge=VirtualAlloc(nullptr,32,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
@@ -203,6 +246,11 @@ inline bool install(std::uintptr_t imageBase=0x400000) {
  for(unsigned i=0;i<8;++i)if(!writePatch(patches[i],hooks[i],i==4||i==5)) {
   for(unsigned j=0;j<i;++j)restore(patches[j]);
   for(unsigned j=0;j<8;++j)if(patches[j].bridge)VirtualFree(patches[j].bridge,0,MEM_RELEASE);return false;
+ }
+ for(unsigned i=0;i<updatePatches.size();++i)if(!writePointer(updatePatches[i],updateHooks[i])) {
+  for(unsigned j=0;j<i;++j)restore(updatePatches[j]);
+  for(auto &p:patches){restore(p);if(p.bridge)VirtualFree(p.bridge,0,MEM_RELEASE);}
+  return false;
  }
  installed=true;return true;
 }

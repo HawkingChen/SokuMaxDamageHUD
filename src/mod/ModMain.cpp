@@ -1242,12 +1242,12 @@ void loadSettings() {
     if(g_damageTraceFile.is_open())g_damageTraceFile.close();
     if(g_damageTraceEnabled) {
         g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
-        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.8; numerical inference disabled\n";
+        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.9; numerical inference disabled\n";
     }
     g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
     if(g_nativeTraceEnabled) {
         g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
-        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native settlement probe v1; native per-hit attribution enabled\n";
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.9; projectile update-context tracking\n";
         else g_nativeTraceEnabled=false;
     }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());

@@ -50,9 +50,10 @@ __declspec(naked) void __cdecl runInstruction(void *code,void *attack,void *vict
  }
 }
 std::array<unsigned char,4096> p1{},p2{},bullet{},parentObject{};
+void *factoryResult=bullet.data();
 template<class T>void put(void *p,unsigned o,T x){std::memcpy(static_cast<char*>(p)+o,&x,sizeof(x));}
 void * __fastcall fakeFactory(void*,void*,void*,void*,short action,float x,float y,int dir,int layer,void*,unsigned size) {
- assert(action==1010&&x==123.5f&&y==-17.25f&&dir==-1&&layer==2&&size==3);return bullet.data();
+ assert(action==1010&&x==123.5f&&y==-17.25f&&dir==-1&&layer==2&&size==3);return factoryResult;
 }
 void * __fastcall fakeRoot(void *self,void*,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
  return factoryCreate(nullptr,nullptr,nullptr,self,action,x,y,dir,layer,data,size);
@@ -63,12 +64,19 @@ bool __fastcall fakeAction(void *self,void*,short action) {
 void __fastcall fakeActionSequence(void *self,void*,short action,short seq) {
  fakeAction(self,nullptr,action);put(self,0x13e,static_cast<unsigned short>(seq));
 }
+void __fastcall fakeDelayedUpdate(void *self,void*) {
+ assert(updating==self);
+ // Reusable Bomb's emitter calls PLAYER.createObject while the player is idle.
+ rootCreate(p1.data(),nullptr,1010,123.5f,-17.25f,-1,2,nullptr,3);
+}
 int main(int argc,char **argv){
  put(p1.data(),0x13c,static_cast<unsigned short>(614));put(p1.data(),0x184,static_cast<short>(10000));
  put(p1.data(),0x4b4,static_cast<short>(4));put(p2.data(),0x184,static_cast<short>(9000));
  put(bullet.data(),0x168,static_cast<void*>(p1.data()));put(bullet.data(),0x16c,static_cast<void*>(p1.data()));
  put(bullet.data(),0x13c,static_cast<unsigned short>(1010));put(bullet.data(),0x350,33u);
  put(parentObject.data(),0x350,22u);
+ put(parentObject.data(),0x168,static_cast<void*>(p1.data()));
+ put(parentObject.data(),0x16c,static_cast<void*>(p1.data()));
  installed=true;begin(100,p1.data(),p2.data());
  auto code=static_cast<unsigned char*>(VirtualAlloc(nullptr,32,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE));assert(code);
  const unsigned char original[]={0x66,0x01,0x98,0xb6,0x04,0x00,0x00,0xc3};std::memcpy(code,original,sizeof(original));
@@ -124,6 +132,24 @@ int main(int argc,char **argv){
  assert(events[count-1].creator==reinterpret_cast<std::uintptr_t>(parentObject.data()));
  assert(events[count-1].creatorGeneration==22&&events[count-1].parent==0&&creator==nullptr);
  assert(!setAction(p1.data(),nullptr,0));
+ // Real 22B failure: actor 550 creates an emitter, returns to idle, then
+ // the emitter asks the player to create its explosion. No damage guessing.
+ assert(setAction(p1.data(),nullptr,550));factoryResult=parentObject.data();
+ rootCreate(p1.data(),nullptr,1010,123.5f,-17.25f,-1,2,nullptr,3);
+ const auto emitterBirth=events[count-1];
+ assert(emitterBirth.castAction==550);
+ assert(!setAction(p1.data(),nullptr,0));factoryResult=bullet.data();
+ originalUpdates[1]=reinterpret_cast<Update>(&fakeDelayedUpdate);
+ objectUpdate<1>(parentObject.data(),nullptr);
+ const auto explosionBirth=events[count-1];
+ assert(explosionBirth.creator==reinterpret_cast<std::uintptr_t>(parentObject.data()));
+ assert(explosionBirth.creatorGeneration==22&&explosionBirth.ownerAction==0);
+ assert(updating==nullptr&&creator==nullptr);
+ captureHit(bullet.data(),p2.data(),1650);
+ const std::array<whm::NativeEvent,3> delayed={emitterBirth,explosionBirth,events[count-1]};
+ whm::NativeAttribution sources;
+ const auto attributed=sources.consume(delayed,reinterpret_cast<std::uintptr_t>(p1.data()));
+ assert(attributed.size()==1&&attributed[0].damage==1650&&attributed[0].action==550&&attributed[0].instance);
  end();auto oldCount=count;captureHit(bullet.data(),p2.data(),500);assert(count==oldCount);
  if(argc>1) {
   // Optional local integration check: map the real PE without executing its
@@ -137,8 +163,12 @@ int main(int argc,char **argv){
    restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
    if(p.bridge)VirtualFree(p.bridge,0,MEM_RELEASE);
   }
+  for(unsigned i=0;i<updatePatches.size();++i) {
+   auto &p=updatePatches[i];assert(read<void*>(p.site,0)==updateHooks[i]);
+   restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
+  }
   FreeLibrary(game);installed=false;
-  std::cout<<"All eight actual 1.10a PE signatures, patch installation and restoration passed\n";
+  std::cout<<"All eight code signatures and twenty update slots: installation and restoration passed\n";
  }
  std::cout<<"Native hit amount/victim, null-parent creator chain, registers, flags, x87/SSE and displaced instruction passed\n";
 }
