@@ -1,0 +1,80 @@
+# Damage attribution audit
+
+The optional headless audit uses the publicly served engine behind
+[cleista practice](https://soku.cleista.cc/practice) and its
+[framedata](https://soku.cleista.cc/framedata). It sends observed action,
+creation, helper-command and damage events through the production
+`NativeAttribution` and `RecordTracker` code.
+
+This is an integration test of attribution, not proof that the ported engine
+matches every native game behavior. Native instruction fixtures separately
+check the supported executable signatures, register/FPU preservation, and
+execution of displaced instructions.
+
+## Inputs
+
+Keep downloaded engine files and extracted game data outside this repository.
+The audit does not distribute game archives, images, or third-party engine code.
+
+- Download `https://soku.cleista.cc/framedata-data/CHARACTER/moves.json` for
+  the twenty character keys listed in `tools/audit_move_inventory.py`.
+- Cache `/player/chunks/chunk-OBY5JK72.js` and
+  `/player/chunks/chunk-3FKW4SWO.js` from that site. The adapter checks the
+  engine SHA-256 before rewriting an external copy; a new website build
+  requires review of the adapter.
+- Use the tester's own 1.10a archives. Extract only simulation patterns and
+  spell tables with the small tool below. Pass archives in load order so
+  later patches override earlier files.
+
+```sh
+c++ -std=c++20 -Isrc/core tools/audit_extract_patterns.cpp -o /tmp/extract-patterns
+/tmp/extract-patterns /tmp/patterns /path/to/th123a.dat /path/to/th123b.dat /path/to/th123c.dat
+python3 tools/audit_move_inventory.py /tmp/moves /tmp/inventory.json
+node tools/audit_engine_paths.mjs /tmp/engine /tmp/patterns /tmp/inventory.json /tmp/audit --variants
+c++ -std=c++20 -Isrc/core tests/test_simulator_trace.cpp src/core/RecordTracker.cpp -o /tmp/check-attribution
+/tmp/check-attribution /tmp/audit/simulator-native.tsv
+```
+
+The source adapter uses Node 22's bundled Acorn parser and refuses to run if
+it is unavailable. It instruments HP assignments without changing their values.
+It preserves the native collector's object-update context for player spawn
+services, action-sequence callbacks, and Youmu's explicit helper mailbox.
+
+## What the result means
+
+`cases.jsonl` keeps observed HP writes, engine diagnostics and per-case status.
+`summary.json` states the scenario limits. The checker reports unidentified
+hits, a source action different from the initiating action, and incomplete
+per-cast totals. Self-damage and opponent damage are counted separately.
+
+The default sweep uses each distinct normal/skill/spell action, two distances,
+900 updates, one seed and maximum skill level. `--variants` also runs every
+listed notation row and holds a charged move's button for 60 updates before
+releasing it. A scenario stops when a separate attack begins; follow-ups
+are exercised in their own rows rather than counted as the first move. Rejected
+action entries are explicitly recorded as unexercised. Actions are entered directly: this does not validate command
+inputs, every release timing, every level, weather, guard, or all opponent
+states. The update loop exercises character scripts and collisions, not the
+complete practice UI and round lifecycle.
+
+An entry with no observed damage is **not a pass**: it can be movement, a buff,
+a miss, a prerequisite-dependent move, or an unavailable action. Engine
+diagnostics also remain review items. Inventory coverage, simulated execution,
+production attribution checks and native game verification must be reported
+separately.
+
+## Frozen regression input
+
+`tests/fixtures/simulator-attribution.tsv` contains only simulated event
+numbers, pruned to hit ancestry and command boundaries. Its adjacent JSON
+records the source hash, scenario limits and per-character counts. CTest runs
+it through the production code as `whm_simulator_tests`; no network or game
+installation is required for that regression.
+
+The recorded sweep covers 1,958 listed normal/skill/spell rows in 3,916
+scenarios. Damage was observed in 2,471 scenarios, yielding 15,417 damage
+events. Attribution, source labels and per-cast totals match for those
+observed events. The other 1,445 scenarios did not produce damage; they are
+not evidence of supported hit attribution. Twelve scenarios also carry
+ported-engine diagnostics. The sweep does not establish exhaustive native
+coverage.

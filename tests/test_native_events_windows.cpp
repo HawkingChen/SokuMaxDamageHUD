@@ -49,6 +49,52 @@ __declspec(naked) void __cdecl runInstruction(void *code,void *attack,void *vict
   ret
  }
 }
+__declspec(naked) void __cdecl runPoisonInstruction(void *code,void *attack,void *target,int afterHP,Result *out) {
+ __asm {
+  push ebp
+  mov ebp,esp
+  push ebx
+  push esi
+  push edi
+  mov eax,[ebp+24]
+  mov [eax+36],ebp
+  lea edx,[esp-4]
+  mov [eax+40],edx
+  fninit
+  sub esp,4
+  fnstcw [esp]
+  or word ptr [esp],0800h
+  fldcw [esp]
+  add esp,4
+  fld1
+  fldpi
+  mov eax,[ebp+20]
+  mov ecx,[ebp+16]
+  mov esi,[ebp+12]
+  mov ebx,[ebp+20]
+  mov edi,012345678h
+  mov edx,076543210h
+  cmp edx,edx
+  call dword ptr [ebp+8]
+  pushfd
+  pushad
+  mov edi,[ebp+24]
+  mov esi,esp
+  mov ecx,9
+  rep movsd
+  mov edi,[ebp+24]
+  add edi,48
+  fxsave [edi]
+  popad
+  popfd
+  fninit
+  pop edi
+  pop esi
+  pop ebx
+  pop ebp
+  ret
+ }
+}
 std::array<unsigned char,4096> p1{},p2{},bullet{},parentObject{};
 void *factoryResult=bullet.data();
 template<class T>void put(void *p,unsigned o,T x){std::memcpy(static_cast<char*>(p)+o,&x,sizeof(x));}
@@ -120,6 +166,63 @@ int main(int argc,char **argv){
  assert(std::memcmp(baseline.fx,hooked.fx,8)==0);
  assert(std::memcmp(baseline.fx+32,hooked.fx+32,128)==0);
  restore(patch);VirtualFree(code,0,MEM_RELEASE);
+ // Exact gas HP-store hook: no combo increment or ordinary hit callback.
+ auto poisonCode=static_cast<unsigned char*>(VirtualAlloc(nullptr,32,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE));assert(poisonCode);
+ const unsigned char store[]={0x66,0x89,0x81,0x84,0x01,0x00,0x00,0xc3};
+ std::memcpy(poisonCode,store,sizeof(store));
+ put(p2.data(),0x184,static_cast<short>(10000));
+ Result poisonBaseline{},poisonHooked{};
+ runPoisonInstruction(poisonCode,bullet.data(),p2.data(),9998,&poisonBaseline);
+ Patch poisonPatch;poisonPatch.site=poisonCode;poisonPatch.length=7;
+ std::memcpy(poisonPatch.original.data(),store,7);
+ assert(writePatch(poisonPatch,reinterpret_cast<void*>(&directHPStub),true));
+ put(p2.data(),0x184,static_cast<short>(10000));auto beforePoison=count;
+ runPoisonInstruction(poisonCode,bullet.data(),p2.data(),9998,&poisonHooked);
+ assert(read<short>(p2.data(),0x184)==9998&&count==beforePoison+1);
+ assert(events[count-1].path==2&&events[count-1].damage==2&&events[count-1].hp==10000);
+ for(unsigned i:{0u,1u,4u,5u,6u,7u})assert(poisonBaseline.regs[i]==poisonHooked.regs[i]);
+ assert(poisonHooked.regs[2]==poisonHooked.padding[0]&&poisonHooked.regs[3]==poisonHooked.padding[1]);
+ assert((poisonBaseline.flags&0x8d5)==(poisonHooked.flags&0x8d5));
+ assert(std::memcmp(poisonBaseline.fx,poisonHooked.fx,8)==0);
+ assert(std::memcmp(poisonBaseline.fx+24,poisonHooked.fx+24,8)==0);
+ assert(std::memcmp(poisonBaseline.fx+32,poisonHooked.fx+32,128)==0);
+ assert(std::memcmp(poisonBaseline.fx+160,poisonHooked.fx+160,128)==0);
+ // A non-decreasing HP write does not fabricate a damage event.
+ beforePoison=count;runPoisonInstruction(poisonCode,bullet.data(),p2.data(),9998,&poisonHooked);
+ assert(count==beforePoison);
+ restore(poisonPatch);assert(std::memcmp(poisonCode,store,sizeof(store))==0);
+ // Yuyuko's other branch writes BX=1; capture the remaining 1..3 HP once.
+ const unsigned char floorStore[]={0x66,0x89,0x99,0x84,0x01,0x00,0x00,0xc3};
+ std::memcpy(poisonCode,floorStore,sizeof(floorStore));
+ std::memcpy(poisonPatch.original.data(),floorStore,7);
+ put(p2.data(),0x184,static_cast<short>(4));
+ runPoisonInstruction(poisonCode,bullet.data(),p2.data(),1,&poisonBaseline);
+ assert(writePatch(poisonPatch,reinterpret_cast<void*>(&directHPFloorStub),true));
+ put(p2.data(),0x184,static_cast<short>(4));beforePoison=count;
+ runPoisonInstruction(poisonCode,bullet.data(),p2.data(),1,&poisonHooked);
+ assert(read<short>(p2.data(),0x184)==1&&count==beforePoison+1);
+ assert(events[count-1].damage==3&&events[count-1].path==2);
+ for(unsigned i:{0u,1u,4u,5u,6u,7u})assert(poisonBaseline.regs[i]==poisonHooked.regs[i]);
+ assert((poisonBaseline.flags&0x8d5)==(poisonHooked.flags&0x8d5));
+ assert(std::memcmp(poisonBaseline.fx,poisonHooked.fx,8)==0);
+ assert(std::memcmp(poisonBaseline.fx+32,poisonHooked.fx+32,128)==0);
+ assert(std::memcmp(poisonBaseline.fx+160,poisonHooked.fx+160,128)==0);
+ restore(poisonPatch);assert(std::memcmp(poisonCode,floorStore,sizeof(floorStore))==0);
+ VirtualFree(poisonCode,0,MEM_RELEASE);
+ // A queued half-ghost command retains its issuing cast after the owner
+ // recovers and starts an unrelated normal. No nearest-action fallback.
+ put(p1.data(),0x34c,5);put(p1.data(),0x8d2,static_cast<short>(0));
+ captureAction(p1.data(),410);const auto ghostCast=actors.get(0);
+ put(p1.data(),0x8d2,static_cast<short>(1));captureAction(p1.data(),0);
+ captureAction(p1.data(),300);
+ put(bullet.data(),0x13c,static_cast<unsigned short>(899));
+ put(bullet.data(),0x13e,static_cast<unsigned short>(0));
+ const auto beforeGhost=count;beginGhostCommand(bullet.data());
+ assert(count==beforeGhost+1&&events[count-1].kind==Event::Rebind);
+ assert(events[count-1].cast==ghostCast.id&&events[count-1].castAction==410);
+ beginGhostCommand(bullet.data());assert(count==beforeGhost+1);
+ put(p1.data(),0x8d2,static_cast<short>(0));endGhostCommand(bullet.data());
+ assert(!ghostPending[0].valid());put(p1.data(),0x34c,0);
  originalAction=reinterpret_cast<SetAction>(&fakeAction);
  originalActionSequence=reinterpret_cast<SetActionSequence>(&fakeActionSequence);
  assert(setAction(p1.data(),nullptr,614));
@@ -199,7 +302,7 @@ int main(int argc,char **argv){
   installed=false;assert(install(reinterpret_cast<std::uintptr_t>(game)));
   for(unsigned i=0;i<patches.size();++i) {
    auto &p=patches[i];
-   assert(*static_cast<unsigned char*>(p.site)==(i==3||i==4?0xe8:0xe9));
+   assert(*static_cast<unsigned char*>(p.site)==(i==3||i==4||i>=7?0xe8:0xe9));
    restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
    if(p.bridge)VirtualFree(p.bridge,0,MEM_RELEASE);
   }
@@ -212,7 +315,7 @@ int main(int argc,char **argv){
    restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
   }
   FreeLibrary(game);installed=false;
-  std::cout<<"All seven code signatures, twenty update and twenty factory slots: installation/restoration passed\n";
+  std::cout<<"All ten code signatures, twenty update and twenty factory slots: installation/restoration passed\n";
  }
  std::cout<<"Native hit amount/victim, null-parent creator chain, registers, flags, x87/SSE and displaced instruction passed\n";
 }

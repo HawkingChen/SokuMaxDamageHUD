@@ -148,7 +148,7 @@ void flushNativeEvents() {
     auto &out=g_nativeTraceFile;
     for(unsigned i=0;i<whm::native::count;++i) {
         const auto &e=whm::native::events[i];
-        out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":"ACTION")
+        out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":e.kind==whm::native::Event::Rebind?"REBIND":"ACTION")
            <<" frame="<<e.frame<<" object="<<std::hex<<e.object<<std::dec
            <<":"<<e.generation<<" owner="<<std::hex<<e.owner
            <<" ally="<<e.ally<<" victim="<<e.victim
@@ -1268,7 +1268,7 @@ void loadSettings() {
     g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
     if(g_nativeTraceEnabled) {
         g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
-        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.11; all-character factories and update contexts\n";
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.11; all-character factories, update contexts, direct damage-over-time\n";
         else g_nativeTraceEnabled=false;
     }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());

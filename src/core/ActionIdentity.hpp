@@ -44,6 +44,11 @@ constexpr int spellCardForAction(int action) noexcept {
 constexpr int canonicalAttackAction(int action) noexcept {
     return isSpellFollowupAction(action)?action-50:action;
 }
+// Vanilla Suwako routes: 66A enters its airborne strike automatically;
+// airborne Stone Frog God lands into the corresponding ground execution.
+constexpr bool isCharacterAttackContinuation(int character,int from,int to) noexcept {
+    return character==19&&((from==305&&to==306)||(from==552&&to==550)||(from==553&&to==551));
+}
 constexpr int cardForAction(int character,int action) {
     const int spell=spellCardForAction(action);
     return spell>=0?spell:skillCardForAction(character,action);

@@ -1080,6 +1080,110 @@ static void testNativePerHitAttribution() {
 // Real 0.5.9 failure: five HIT events were present but Meiling's factory
 // wasn't hooked, so every projectile lacked its BIRTH. Capture must precede
 // attribution; the game's 1797 combo total is not used as a substitute.
+static void testReisenPoisonDirectHPWritesAccumulateToItsSpell() {
+    using namespace whm;
+    NativeAttribution sources;RecordTracker records;
+    records.observeDamage(947,500,1,999);
+    NativeEvent root;root.kind=NativeEvent::Birth;root.object=300;root.generation=1;
+    root.owner=root.ally=root.creator=100;root.cast=70;root.castAction=608;root.action=858;
+    NativeEvent cloud=root;cloud.object=301;cloud.generation=2;cloud.creator=300;cloud.creatorGeneration=1;
+    cloud.cast=0;cloud.castAction=-1;
+    std::array<NativeEvent,2> births={cloud,root};sources.consume(births,100);
+    // Actual trace: 539 individual 2-HP drops, unchanged combo counters.
+    int hp=5160;
+    for(unsigned tick=0;tick<539;++tick) {
+        NativeEvent e;e.object=301;e.generation=2;e.owner=e.ally=100;e.victim=200;
+        e.damage=2;e.path=2;e.action=858;e.sequence=3;e.ownerAction=0;
+        std::array<NativeEvent,1> batch={e};
+        const auto own=sources.consume(batch,100);
+        recordNativeFrame(records,own,batch,200,1086+tick,hp,hp-2);hp-=2;
+    }
+    assert(hp==4082&&records.best().actionId==608&&records.best().damage==1078);
+    assert(records.unattributedDamage()==0); // don't double-count HP corroboration
+    // An unrelated body hit is still a separate cast.
+    NativeDamage normal{500,300,2000,false};NativeEvent direct;
+    direct.owner=direct.ally=100;direct.victim=200;direct.damage=500;
+    recordNativeFrame(records,std::span<const NativeDamage>(&normal,1),
+        std::span<const NativeEvent>(&direct,1),200,1800,hp,hp-500);
+    assert(records.best().actionId==608&&records.best().damage==1078);
+}
+
+static void testSuwakoAutomaticRoutesKeepTheirActivationCast() {
+    using namespace whm;
+    for(const auto [from,to]:{std::pair{305,306},std::pair{552,550},std::pair{553,551}}) {
+        NativeActors actors;const auto start=actors.set(0,from,-1,19);
+        const auto follow=actors.set(0,to,-1,19);
+        assert(follow.id==start.id&&follow.action==from);
+        NativeEvent hit;hit.owner=hit.ally=hit.object=100;hit.victim=200;
+        hit.ownerCharacter=19;hit.cast=follow.id;hit.castAction=follow.action;
+        hit.boxAction=to;hit.damage=200;
+        NativeAttribution sources;
+        const auto hits=sources.consume(std::span<const NativeEvent>(&hit,1),100);
+        assert(hits.size()==1&&hits[0].action==from);
+        actors.set(0,0,-1,19);
+        assert(actors.set(0,to,-1,19).id!=start.id); // a new input is a new cast
+        NativeActors another;const auto other=another.set(0,from,-1,0);
+        assert(another.set(0,to,-1,0).id!=other.id); // character-specific only
+    }
+}
+
+static void testPersistentHelperCommandsDoNotRetagOlderProjectiles() {
+    using namespace whm;
+    NativeAttribution sources;
+    NativeEvent command;command.kind=NativeEvent::Rebind;
+    command.object=300;command.owner=command.creator=100;command.cast=1;command.castAction=410;
+    NativeEvent old;old.kind=NativeEvent::Birth;old.object=301;old.owner=100;old.creator=300;
+    std::array<NativeEvent,2> start={command,old};sources.consume(start,100);
+    command.cast=2;command.castAction=560;
+    NativeEvent fresh=old;fresh.object=302;
+    NativeEvent hitOld;hitOld.object=301;hitOld.owner=hitOld.ally=100;hitOld.victim=200;hitOld.damage=100;
+    NativeEvent hitNew=hitOld;hitNew.object=302;hitNew.damage=200;
+    // Old hit before the command and old/new children after it retain their
+    // own command versions, even when everything occurs in the same frame.
+    std::array<NativeEvent,5> next={hitOld,command,fresh,hitOld,hitNew};
+    const auto hits=sources.consume(next,100);
+    assert(hits.size()==3&&hits[0].action==410&&hits[1].action==410&&hits[2].action==560);
+    assert(hits[0].instance==hits[1].instance&&hits[0].instance!=hits[2].instance);
+    // A scripted hit can occur inside initialization, before the parent
+    // factory returns. Forward references still resolve after batch assembly.
+    NativeAttribution initializing;
+    NativeEvent parent=command;parent.kind=NativeEvent::Birth;parent.object=400;
+    parent.cast=3;parent.castAction=561;
+    NativeEvent child=old;child.object=401;child.creator=400;
+    NativeEvent earlyHit=hitOld;earlyHit.object=401;
+    const std::array<NativeEvent,3> constructors={child,earlyHit,parent};
+    const auto initialized=initializing.consume(constructors,100);
+    assert(initialized.size()==1&&initialized[0].action==561);
+    // An explicit command with missing origin invalidates the helper's NEW
+    // output. Earlier descendants remain attributed to their old command.
+    command.cast=0;command.castAction=-1;
+    fresh.object=303;hitNew.object=303;
+    const std::array<NativeEvent,4> unknown={command,fresh,hitOld,hitNew};
+    const auto tail=sources.consume(unknown,100);
+    assert(tail.size()==2&&tail[0].action==410&&tail[1].action==-1);
+}
+
+static void testYuyukoPoisonPersistsAfterOwnerRecoversAndStopsAtOneHP() {
+    using namespace whm;
+    NativeAttribution sources;RecordTracker records;
+    NativeEvent birth;birth.kind=NativeEvent::Birth;birth.object=300;
+    birth.owner=birth.ally=birth.creator=100;
+    birth.cast=1;birth.castAction=602;birth.action=852;
+    sources.consume(std::span<const NativeEvent>(&birth,1),100);
+    int hp=1204;
+    for(unsigned tick=0;tick<301;++tick) {
+        NativeEvent hit;hit.object=300;hit.owner=hit.ally=100;hit.victim=200;
+        hit.action=852;hit.ownerAction=0;hit.path=2;
+        hit.damage=tick==300?3:4;
+        const std::array<NativeEvent,1> events={hit};
+        const auto own=sources.consume(events,100);
+        recordNativeFrame(records,own,events,200,tick,hp,hp-hit.damage);
+        hp-=hit.damage;
+    }
+    assert(hp==1&&records.best().actionId==602&&records.best().damage==1203);
+    assert(records.unattributedDamage()==0);
+}
+
 static void testReceivedDamageIsNotLocalUnknownOutput() {
     using namespace whm;
     constexpr std::uintptr_t local=100,opponent=200;
@@ -1154,6 +1258,10 @@ static void testArchivedRoundRecordCannotBeRevokedByReusedCastID() {
 }
 
 int main() {
+    testReisenPoisonDirectHPWritesAccumulateToItsSpell();
+    testYuyukoPoisonPersistsAfterOwnerRecoversAndStopsAtOneHP();
+    testPersistentHelperCommandsDoNotRetagOlderProjectiles();
+    testSuwakoAutomaticRoutesKeepTheirActivationCast();
     testReceivedDamageIsNotLocalUnknownOutput();
     testMeilingFangPoFiveProjectilesOneCast();
     testNativePerHitAttribution();

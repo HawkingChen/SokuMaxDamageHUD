@@ -8,6 +8,9 @@
 namespace whm::native {
 using Event=whm::NativeEvent;
 inline whm::NativeActors actors;
+inline whm::NativeCast ghostPending[2]{},ghostBound[2]{};
+inline const void *ghostObjects[2]{};
+inline unsigned ghostGenerations[2]{};
 inline std::array<Event,4096> events{};
 inline unsigned count=0,dropped=0,frame=0;
 inline const void *players[2]{};
@@ -28,22 +31,54 @@ template<typename T> inline T read(const void *p,unsigned offset) noexcept {
 }
 inline bool isPlayer(const void *p){return p&&(p==players[0]||p==players[1]);}
 inline bool capturing(){return active&&GetCurrentThreadId()==gameThread;}
+inline void beginGhostCommand(void *self) noexcept;
+inline void endGhostCommand(void *self) noexcept;
 template<unsigned I> inline void __fastcall objectUpdate(void *self,void*) {
  if(!capturing()){originalUpdates[I](self);return;}
- UpdateScope scope(self);originalUpdates[I](self);
+ UpdateScope scope(self);
+ if constexpr(I==5)beginGhostCommand(self);
+ originalUpdates[I](self);
+ if constexpr(I==5)endGhostCommand(self);
 }
 inline void append(Event e) noexcept {if(count<events.size())events[count++]=e;else ++dropped;}
+inline void clearGhostCommands() {
+ for(unsigned side=0;side<2;++side){ghostPending[side]={};ghostBound[side]={};ghostObjects[side]=nullptr;ghostGenerations[side]=0;}
+}
 inline void begin(unsigned f,const void *left,const void *right) noexcept {
- if(players[0]!=left || players[1]!=right)actors.reset();
+ if(players[0]!=left || players[1]!=right){actors.reset();clearGhostCommands();}
  count=0;dropped=0;frame=f;players[0]=left;players[1]=right;
  gameThread=GetCurrentThreadId();active=installed;
 }
 inline void end() noexcept {active=false;}
 inline unsigned side(const void *p) {return p==players[0]?0:1;}
-inline void resetActors() {actors.reset();players[0]=players[1]=nullptr;}
+inline void resetActors() {actors.reset();clearGhostCommands();players[0]=players[1]=nullptr;}
+// Youmu's persistent half-ghost (899) consumes the explicit +0x8D2
+// command mailbox. It is not a fresh projectile born for each attack.
+inline void beginGhostCommand(void *self) noexcept {
+ if(read<unsigned short>(self,0x13c)!=899 || read<unsigned short>(self,0x13e)!=0)return;
+ void *owner=read<void*>(self,0x168);if(!isPlayer(owner)||read<short>(owner,0x8d2)<=0)return;
+ const unsigned index=side(owner),generation=read<unsigned>(self,0x350);
+ const auto root=ghostPending[index].valid()?ghostPending[index]:actors.get(index);
+ if(root.valid()&&ghostBound[index].id==root.id&&ghostObjects[index]==self&&ghostGenerations[index]==generation)return;
+ Event e;e.kind=Event::Rebind;e.frame=frame;e.object=reinterpret_cast<std::uintptr_t>(self);
+ e.generation=generation;e.owner=e.creator=e.ally=reinterpret_cast<std::uintptr_t>(owner);
+ e.cast=root.id;e.castAction=root.action;e.action=899;
+ append(e);ghostBound[index]=root;ghostObjects[index]=self;ghostGenerations[index]=generation;
+}
+inline void endGhostCommand(void *self) noexcept {
+ void *owner=read<void*>(self,0x168);
+ if(isPlayer(owner)&&read<short>(owner,0x8d2)==0)ghostPending[side(owner)]={};
+}
 inline void captureAction(void *self,int action,int sequence=-1) {
  if(!capturing()||!isPlayer(self))return;
- const auto cast=actors.set(side(self),action,sequence);
+ // Preserve the issued command's cast if the owner leaves the move before
+ // a stopped half-ghost gets an update. Never borrow a later unrelated cast.
+ if(read<int>(self,0x34c)==5) {
+  auto &pending=ghostPending[side(self)];
+  if(read<short>(self,0x8d2)<=0)pending={};
+  else if(!pending.valid())pending=actors.get(side(self));
+ }
+ const auto cast=actors.set(side(self),action,sequence,read<int>(self,0x34c));
  Event e;e.kind=Event::Action;e.frame=frame;e.owner=reinterpret_cast<std::uintptr_t>(self);
  e.action=action;e.sequence=sequence;e.cast=cast.id;e.castAction=cast.action;append(e);
 }
@@ -56,13 +91,68 @@ __declspec(noinline) inline void __cdecl captureHit(void *attack,void *target,in
  e.owner=reinterpret_cast<std::uintptr_t>(owner);e.ally=read<std::uintptr_t>(attack,0x16c);
  e.action=read<unsigned short>(attack,0x13c);e.sequence=read<unsigned short>(attack,0x13e);
  e.boxAction=read<short>(attack,0x1c8);e.ownerAction=read<unsigned short>(owner,0x13c);
- e.victimAction=read<unsigned short>(target,0x13c);
+ e.victimAction=read<unsigned short>(target,0x13c);e.ownerCharacter=read<int>(owner,0x34c);
  e.damage=amount;e.hp=read<short>(target,0x184);e.ownerHP=read<short>(owner,0x184);
  e.comboHits=read<short>(reinterpret_cast<void*>(e.ally),0x4b4);
  e.comboDamageBefore=read<short>(reinterpret_cast<void*>(e.ally),0x4b6);
  e.protectedHP=read<unsigned char>(target,0x575);
  if(attack!=owner){e.generation=read<unsigned>(attack,0x350);e.parent=read<std::uintptr_t>(attack,0x368);}
  append(e);
+}
+// Called immediately BEFORE a verified damage-over-time HP store.
+// Derive the amount from its exact old/new values, not from a frame delta.
+__declspec(noinline) inline void __cdecl captureDirectHP(void *attack,void *target,int afterHP) noexcept {
+ if(!capturing()||!isPlayer(target))return;
+ const int amount=static_cast<int>(read<short>(target,0x184))-afterHP;
+ if(amount>0)captureHit(attack,target,amount,2);
+}
+// 1.10a 0x63E650: ESI=gas object, ECX=victim, AX=new HP.
+__declspec(naked) inline void directHPStub() {
+ __asm {
+  pushfd
+  pushad
+  mov ebp,esp
+  sub esp,528
+  and esp,0fffffff0h
+  fxsave [esp]
+  fninit
+  movsx eax,ax
+  push eax
+  push ecx
+  push esi
+  call captureDirectHP
+  add esp,12
+  fxrstor [esp]
+  mov esp,ebp
+  popad
+  popfd
+  mov word ptr [ecx+0184h],ax
+  ret
+ }
+}
+// Yuyuko poison's low-HP branch stores BX=1 instead of subtracting four.
+__declspec(naked) inline void directHPFloorStub() {
+ __asm {
+  pushfd
+  pushad
+  mov ebp,esp
+  sub esp,528
+  and esp,0fffffff0h
+  fxsave [esp]
+  fninit
+  movsx eax,bx
+  push eax
+  push ecx
+  push esi
+  call captureDirectHP
+  add esp,12
+  fxrstor [esp]
+  mov esp,ebp
+  popad
+  popfd
+  mov word ptr [ecx+0184h],bx
+  ret
+ }
 }
 // At 1.10a +47B05C: EDI=attack object, ESI=victim, BX=one hit's
 // final damage, EAX=combo owner. Preserve integer flags, all registers and
@@ -170,7 +260,7 @@ template<unsigned I> inline void *__fastcall factoryCreate(void *self,void*,void
  return result;
 }
 struct Patch {void *site=nullptr,*bridge=nullptr;unsigned length=0;std::array<unsigned char,8> original{};};
-inline std::array<Patch,7> patches{};
+inline std::array<Patch,10> patches{};
 inline std::array<Patch,20> updatePatches{};
 inline std::array<Patch,20> factoryPatches{};
 inline constexpr std::array<std::array<std::uintptr_t,2>,20> factorySites{{
@@ -220,14 +310,16 @@ inline bool install(std::uintptr_t imageBase=0x400000) {
  const unsigned char creatorBytes[]={0xd9,0x44,0x24,0x0c,0x56};
  const unsigned char hitBytes[]={0x66,0x01,0x98,0xb6,0x04,0x00,0x00};
  const unsigned char actionBytes[]={0x66,0x8b,0x44,0x24,0x04};
- const std::uintptr_t addresses[]={0x46eb30,0x59b6c0,0x5b8ed0,0x47b05c,0x47b28f,0x438ca0,0x438cc0};
+ const unsigned char poisonBytes[]={0x66,0x89,0x81,0x84,0x01,0x00,0x00};
+ const unsigned char floorBytes[]={0x66,0x89,0x99,0x84,0x01,0x00,0x00};
+ const std::uintptr_t addresses[]={0x46eb30,0x59b6c0,0x5b8ed0,0x47b05c,0x47b28f,0x438ca0,0x438cc0,0x63e650,0x5c2102,0x5c2110};
  void *hooks[]={reinterpret_cast<void*>(&rootCreate),reinterpret_cast<void*>(&objectCreate),
      reinterpret_cast<void*>(&childCreate),reinterpret_cast<void*>(&settlementStub),
-     reinterpret_cast<void*>(&scriptedSettlementStub),reinterpret_cast<void*>(&setAction),reinterpret_cast<void*>(&setActionSequence)};
+     reinterpret_cast<void*>(&scriptedSettlementStub),reinterpret_cast<void*>(&setAction),reinterpret_cast<void*>(&setActionSequence),reinterpret_cast<void*>(&directHPStub),reinterpret_cast<void*>(&directHPStub),reinterpret_cast<void*>(&directHPFloorStub)};
  // Reject modified/unsupported code before writing ANY location.
  for(unsigned i=0;i<patches.size();++i) {
-  auto &p=patches[i];p.site=reinterpret_cast<void*>(imageBase+addresses[i]-0x400000);p.length=(i<3||i>=5)?5:7;
-  auto expected=i<3?creatorBytes:i<5?hitBytes:actionBytes;
+  auto &p=patches[i];p.site=reinterpret_cast<void*>(imageBase+addresses[i]-0x400000);p.length=(i<3||i==5||i==6)?5:7;
+  auto expected=i<3?creatorBytes:i<5?hitBytes:i<7?actionBytes:i<9?poisonBytes:floorBytes;
   if(std::memcmp(p.site,expected,p.length)!=0)return false;
   std::memcpy(p.original.data(),p.site,p.length);
  }
@@ -250,7 +342,7 @@ inline bool install(std::uintptr_t imageBase=0x400000) {
   originalFactories[i]=reinterpret_cast<Factory>(expected);
  }
  for(unsigned i=0;i<patches.size();++i) {
-  if(i==3||i==4)continue;
+  if(i==3||i==4||i>=7)continue;
   auto &p=patches[i];p.bridge=VirtualAlloc(nullptr,32,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
   if(!p.bridge){for(unsigned j=0;j<i;++j)if(patches[j].bridge)VirtualFree(patches[j].bridge,0,MEM_RELEASE);return false;}
   std::memcpy(p.bridge,p.original.data(),p.length);
@@ -260,7 +352,7 @@ inline bool install(std::uintptr_t imageBase=0x400000) {
  originalChild=reinterpret_cast<Create>(patches[2].bridge);
  originalAction=reinterpret_cast<SetAction>(patches[5].bridge);
  originalActionSequence=reinterpret_cast<SetActionSequence>(patches[6].bridge);
- for(unsigned i=0;i<patches.size();++i)if(!writePatch(patches[i],hooks[i],i==3||i==4)) {
+ for(unsigned i=0;i<patches.size();++i)if(!writePatch(patches[i],hooks[i],i==3||i==4||i>=7)) {
   for(unsigned j=0;j<i;++j)restore(patches[j]);
   for(unsigned j=0;j<patches.size();++j)if(patches[j].bridge)VirtualFree(patches[j].bridge,0,MEM_RELEASE);return false;
  }
