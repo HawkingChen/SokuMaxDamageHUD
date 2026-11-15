@@ -297,11 +297,19 @@ InferenceResult DamageInference::solve(int target, const InferenceState &state) 
     // A residual this large means the simulation did NOT explain the combo.
     // Never present a forced guess as a move name -- the HUD then falls back
     // to the authoritative COMBO DAMAGE label instead of inventing a cast.
-    const double plausible = std::max(tolerance, static_cast<double>(target) * 0.12);
+    const double plausible = std::max(tolerance, static_cast<double>(target) * 0.06);
     if (result.residual > plausible) {
         result.valid = false;
         result.reason = "no plausible explanation (residual " +
                         std::to_string(result.residual) + ")";
+        return result;
+    }
+    // When the game showed us which casts were live, a combination that uses
+    // none of them is a numeric coincidence, not an inference. Require a
+    // near-exact fit before offering it as a concrete move name.
+    if (!evidence.empty() && !evidenceOnly && result.residual > tolerance) {
+        result.valid = false;
+        result.reason = "explanation without live evidence";
     }
     return result;
 }

@@ -825,10 +825,11 @@ static void testDamageInferenceSuikaComboReplay() {
         assert(r.residual<=static_cast<int>(sample.first*0.06)+30);
         assert(r.confidence>0.6);
     }
-    // Upper-bound pruning: a cast whose maximum damage is below the combo
-    // total cannot be offered as a confident single-cast explanation.
+    // No forced guesses. 9000 can be approximated by sc208 x4 + 5C x15
+    // (8006), but sc208 never appeared in this combo: an unmatched pair with
+    // a large residual must be rejected, not shown as "sc208 (EST.)".
     const auto impossible=catalog.solve(9000,state(18,{410},-1));
-    assert(!impossible.valid); // never display a forced guess as a move
+    assert(!impossible.valid);
     DamageInference empty;
     assert(!empty.solve(2280,state(18,{410},-1)).valid); // missing data table
     // Simulated explanations NEVER pollute the verified BEST HIT invariant.
