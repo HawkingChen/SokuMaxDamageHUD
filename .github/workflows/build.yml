@@ -14,7 +14,7 @@ jobs:
       - name: Configure x86
         run: cmake -S . -B build -A Win32 -DWHM_BUILD_TESTS=ON
       - name: Build Release
-        run: cmake --build build --config Release --target SokuMaxDamageHUD whm_tests whm_effects_tests whm_assets_tests whm_window_tests --parallel
+        run: cmake --build build --config Release --target SokuMaxDamageHUD whm_tests whm_effects_tests whm_assets_tests whm_window_tests whm_native_tests --parallel
       - name: Run tests
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Stage and validate release ZIP

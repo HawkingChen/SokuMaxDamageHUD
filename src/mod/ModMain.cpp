@@ -22,6 +22,7 @@
 #include "OpeningCounter.hpp"
 #include "HitSnapshots.hpp"
 #include "GameAssets.hpp"
+#include "NativeEvents.hpp"
 
 #include <windows.h>
 #include <algorithm>
@@ -39,6 +40,12 @@
 #include <vector>
 
 namespace {
+// Native probe offsets must agree with the pinned x86 SokuLib layout.
+static_assert(offsetof(SokuLib::v2::GameObjectBase, HP)==0x184);
+static_assert(offsetof(SokuLib::v2::GameObjectBase, gameData)+offsetof(SokuLib::v2::GameObjectBase::GameInfo, owner)==0x168);
+static_assert(offsetof(SokuLib::v2::GameObjectBase, gameData)+offsetof(SokuLib::v2::GameObjectBase::GameInfo, ally)==0x16c);
+static_assert(offsetof(SokuLib::v2::GameObject, handleId)==0x350);
+static_assert(offsetof(SokuLib::v2::GameObject, parentObject)==0x368);
 HMODULE g_module = nullptr;
 bool g_hooksInstalled = false;
 bool g_fontReady = false;
@@ -71,6 +78,8 @@ whm::InferenceResult g_lastInfer{};
 bool g_allowUnverifiedProbes = false;
 bool g_damageTraceEnabled = false;
 std::ofstream g_damageTraceFile;
+bool g_nativeTraceEnabled = false;
+std::ofstream g_nativeTraceFile;
 std::vector<whm::Move> g_probeCache;
 int g_probeCharacter = -1;
 const void *g_probeDataSource = nullptr;
@@ -106,6 +115,29 @@ std::string dllFolder() {
     // ANSI module filename breaks image/data loading in non-ASCII folders.
     const auto utf8=moduleFolder().u8string();
     return std::string(utf8.begin(),utf8.end())+"/";
+}
+
+// Diagnostics only: never feed these unvalidated events into HUD records.
+void flushNativeEvents() {
+    if(!g_nativeTraceFile || (!whm::native::count && !whm::native::dropped))return;
+    auto &out=g_nativeTraceFile;
+    for(unsigned i=0;i<whm::native::count;++i) {
+        const auto &e=whm::native::events[i];
+        out<<(e.kind==whm::native::Event::Hit?"HIT":"BIRTH")
+           <<" frame="<<e.frame<<" object="<<std::hex<<e.object<<std::dec
+           <<":"<<e.generation<<" owner="<<std::hex<<e.owner
+           <<" ally="<<e.ally<<" victim="<<e.victim
+           <<" creator="<<e.creator<<std::dec<<":"<<e.creatorGeneration
+           <<" parent="<<std::hex<<e.parent<<" caller="<<e.caller<<std::dec
+           <<" action="<<e.action<<" seq="<<e.sequence<<" box="<<e.boxAction
+           <<" ownerAction="<<e.ownerAction<<" victimAction="<<e.victimAction
+           <<" self="<<(e.owner==e.victim)<<" damage="<<e.damage
+           <<" victimHP="<<e.hp<<" ownerHP="<<e.ownerHP
+           <<" combo="<<e.comboHits<<":"<<e.comboDamageBefore
+           <<" hpProtected="<<e.protectedHP<<"\n";
+    }
+    if(whm::native::dropped)out<<"DROPPED frame="<<whm::native::frame<<" count="<<whm::native::dropped<<"\n";
+    out.flush();
 }
 
 void saveHudPreferences() {
@@ -1097,11 +1129,14 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
                                  : mgr->leftCharacterManager.objectBase.hp;
     const auto *ownBefore=viewPlayer(mgr,side);
     const auto *targetBefore=viewPlayer(mgr,1-side);
+    const int ownHPBefore=ownBefore->HP;
     const auto actorBefore=whm::actorContact(*ownBefore);
     whm::ProjectileSnapshotDiag projectilePreDiag;
     const auto objectsBefore=whm::projectileContacts(*ownBefore,&projectilePreDiag);
     const auto comboBefore=whm::comboReading(*ownBefore,*targetBefore);
+    if(g_nativeTraceEnabled)whm::native::begin(mgr->frameCount,viewPlayer(mgr,0),viewPlayer(mgr,1));
     const int result = (mgr->*g_originalProcess)();
+    if(g_nativeTraceEnabled){whm::native::end();flushNativeEvents();}
     if (ownSide() != side || &SokuLib::getBattleMgr()!=mgr ||
         (SokuLib::sceneId!=SokuLib::SCENE_BATTLE && SokuLib::sceneId!=SokuLib::SCENE_BATTLESV && SokuLib::sceneId!=SokuLib::SCENE_BATTLECL)) {
         g_panelWanted.store(false);
@@ -1208,14 +1243,16 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     // instrumentation of the game's own damage routines. Never enable in
     // ordinary builds without the player's explicit INI setting.
     if(g_damageTraceEnabled && g_damageTraceFile &&
-       (dealt>0 || actorBefore.action==410 || actorAfter.action==410 ||
+       (dealt>0 || ownHPBefore!=attacker->HP ||
+        (actorBefore.action!=actorAfter.action && (actorBefore.action>=600 || actorAfter.action>=600)) ||
+        actorBefore.action==410 || actorAfter.action==410 ||
         (static_cast<int>(attacker->characterIndex)==9 &&
          (actorBefore.action==307 || actorAfter.action==307)))) {
         auto &out=g_damageTraceFile;
         out<<"frame="<<mgr->frameCount<<" char="<<static_cast<int>(attacker->characterIndex)
            <<" action="<<actorBefore.action<<">"<<actorAfter.action
            <<" seq="<<actorBefore.sequence<<">"<<actorAfter.sequence
-           <<" hp="<<before<<">"<<after<<" dealt="<<dealt
+           <<" hp="<<before<<">"<<after<<" ownHP="<<ownHPBefore<<">"<<attacker->HP<<" dealt="<<dealt
            <<" combo="<<comboBefore.hits<<":"<<comboBefore.damage
            <<">"<<comboAfter.hits<<":"<<comboAfter.damage
            <<" source="<<source.origin.action<<":"<<source.origin.instance
@@ -1293,6 +1330,12 @@ void loadSettings() {
         g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
         if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: damage-source diagnostics enabled\n";
     }
+    g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
+    if(g_nativeTraceEnabled) {
+        g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native settlement probe v1; diagnostics only; records unchanged\n";
+        else g_nativeTraceEnabled=false;
+    }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
     g_y = GetPrivateProfileIntW(L"HUD", L"Y", g_y, ini.c_str());
     g_w = std::max(170, std::min(400, static_cast<int>(GetPrivateProfileIntW(L"HUD", L"Width", g_w, ini.c_str()))));
@@ -1361,6 +1404,12 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE self, HMODULE) {
     DWORD ignore = 0;
     VirtualProtect(reinterpret_cast<void *>(RDATA_SECTION_OFFSET), RDATA_SECTION_SIZE, old, &ignore);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+    if(g_nativeTraceEnabled) {
+        const bool ok=whm::native::install();
+        g_nativeTraceFile<<"# nativeHooks="<<(ok?"installed":"DISABLED: unsupported or modified code / allocation failure")<<"\n";
+        g_nativeTraceFile.flush();
+        if(!ok)g_nativeTraceEnabled=false;
+    }
     HANDLE thread = CreateThread(nullptr, 0, panelThread, nullptr, 0, nullptr);
     if (thread) CloseHandle(thread);
     g_hooksInstalled = true;
