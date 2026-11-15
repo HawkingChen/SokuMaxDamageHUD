@@ -4,7 +4,7 @@
 
 A damage reference HUD for **Touhou Hisoutensoku v1.10a**. A companion panel below or to either side of the game shows estimated move damage, active modifiers and the best recorded hit. Chinese, Japanese and English interfaces are available.
 
-**Battle data is read-only.** The mod reads runtime battle state for estimates and display. It does not change actual damage, character stats or battle state, modify network packets, interfere with the random number generator (RNG), or send gameplay inputs. Image extraction leaves the original game archives untouched; generated images and UI preferences are stored in the mod’s own folder.
+**Uses hooks to observe combat without changing battle values.** Loaded by SokuModLoader, the mod uses game-function hooks and vtable callbacks to collect runtime state and events for estimates, damage attribution and display. These hooks modify function jumps or callbacks inside the game process; they do not change actual damage, character stats or other battle state, modify network packets, interfere with the random number generator (RNG), or send gameplay inputs. Image extraction leaves the original game archives untouched; generated images and UI preferences are stored in the mod’s own folder.
 
 ![Full interface: game and companion HUD](docs/hud-meiling.png)
 
