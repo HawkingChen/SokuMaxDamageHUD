@@ -113,11 +113,15 @@ class HitAttribution {
         // cast: DamageTrace.log shows the 5C stream keeps emitting bullets
         // for ~25 frames after the actor switches to 307, and treating them
         // as orphans made the whole frame "mixed" and blanked BEST HIT.
-        if(casting.action<400) {
+        // Restricted to melee normals (300..399): that is the observed case
+        // (owner cancelled 410 -> 307). While idle or in a non-attack state,
+        // an unrelated spawned effect must not inherit an old cast identity.
+        if(casting.action>=300&&casting.action<400) {
             if(lastRangedOrigin_.valid()&&
                tick_-lastRangedTick_<=kRangedGraceFrames)return lastRangedOrigin_;
             return {};
         }
+        if(casting.action<300||!casting.valid())return {};
         return casting;
     }
 public:
