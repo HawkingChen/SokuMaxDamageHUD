@@ -512,7 +512,8 @@ static void testSuika5CStreamAfterJ6AKeepsItsCast() {
     HitAttribution source;
     ProjectileContact head{9001,0,101,0,1,0,false,true};
     const auto cast=source.observeDetailed(shoot,shoot,{},{head});
-    assert(cast.origin.valid()&&cast.origin.action==410);
+    // A dormant spawn is not yet a damage event, but it MUST be owned.
+    assert(cast.unownedOrigins==0&&cast.liveProjectiles==1);
 
     // 5C keeps emitting unparented bullets for ~25 frames while the owner is
     // already in j6A. They must inherit the SAME 5C cast, never become
