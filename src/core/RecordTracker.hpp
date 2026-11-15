@@ -24,12 +24,15 @@ public:
     void observeDamage(int damage, int action, unsigned frame, std::uint64_t instance,
                        bool mixedSources = false);
     void finish();
-    const ActualRecord &best() const { return best_; }
+    // Preserve a visible record even when this is a genuinely mixed hit.
+    // Only use it when no independently attributed/observed single move exists.
+    const ActualRecord &best() const { return best_.damage>0?best_:mixedFallback_; }
     int unattributedDamage() const { return unattributedDamage_; }
 private:
     void commit();
     std::map<std::uint64_t,ActualRecord> casts_;
     ActualRecord best_{};
+    ActualRecord mixedFallback_{}; // never overtakes a real single-move record
     ActualRecord active_{};
     unsigned lastFrame_ = 0;
     unsigned lastHitFrame_ = 0;
