@@ -190,24 +190,59 @@ public:
         decision.unownedOrigins=unresolvedCount;
         if(unknownHit || hits.size()>1) {decision.mixed=true;return decision;}
         if(hits.size()==1) {
-            // A sole detected body contact cannot own the whole HP decrease
-            // if another live projectile might deal a delayed hit.
-            // Also fail closed for new bullets whose source cannot be
-            // established, rather than silently relabeling them as j6A.
-            if(unresolvedProjectile){decision.mixed=true;return decision;}
-            for(const auto &candidate:possible)
-                if(candidate!=hits.front()){decision.mixed=true;return decision;}
+            const auto hit=hits.front();
+            const bool actorHit=(hit==beforeOrigin||hit==afterOrigin);
+            // A detected projectile HIT takes precedence over unrelated
+            // passive bullets. Earlier diagnostics wrongly vetoed every hit
+            // merely because ANY other game object existed on screen.
+            if(!actorHit) {
+                decision.origin=hit;
+                return decision;
+            }
+            // A body hit while another live attack belongs to a different
+            // cast may be combined (delayed 5C + j6A). Do not give its whole
+            // frame damage to the body; do not erase the observed damage
+            // either -- RecordTracker keeps an unassigned fallback.
             for(const auto &candidate:latent)
-                if(candidate!=hits.front()){decision.mixed=true;return decision;}
-            decision.origin=hits.front();return decision;
+                if(candidate!=hit){decision.mixed=true;return decision;}
+            // An orphan bullet is a competing source only if it has an
+            // active box/collision. Purely visual newborn FX do not veto
+            // a verified normal attack.
+            if(unresolvedProjectile) {
+                for(const auto &[id,obj]:objects_) {
+                    if(obj.origin.valid()||!obj.sample.owned)continue;
+                    const auto &s=obj.sample;
+                    if((s.hitBoxes&&s.limit>0)||s.collision==1||
+                       s.collision==2||s.collision==7) {
+                        decision.mixed=true;return decision;
+                    }
+                }
+            }
+            decision.origin=hit;return decision;
         }
-        // Without a detected hit, only use an unambiguous, active hit box.
-        // A latent object is insufficient evidence on its own.
-        if(unresolvedProjectile && (possible.size()>0 || !latent.empty())) {
+        // Without a detected contact, an active attack box is a useful
+        // candidate only if no different projectile is also credible.
+        if(possible.size()==1) {
+            const auto chosen=possible.front();
+            for(const auto &candidate:latent)
+                if(candidate!=chosen){decision.mixed=true;return decision;}
+            if(unresolvedProjectile){decision.mixed=true;return decision;}
+            decision.origin=chosen;return decision;
+        }
+        if(!possible.empty()){decision.mixed=true;return decision;}
+        // Delayed 5C or another sustained shot can deal damage without its
+        // collision flag changing on the sampled frame. If the same owned
+        // cast already existed BEFORE this frame, no body box is active,
+        // and it is the ONLY projectile origin, retain that cast's damage.
+        // This inference is applied by the caller ONLY if actual HP/combo
+        // damage occurred; a mere projectile spawn counts as zero damage.
+        if(!unresolvedProjectile&&latent.size()==1 &&
+           !before.hitBoxes&&!after.hitBoxes && !pre.empty()) {
+            decision.origin=latent.front();return decision;
+        }
+        if(unresolvedProjectile||latent.size()>1) {
             decision.mixed=true;return decision;
         }
-        if(possible.size()==1){decision.origin=possible.front();return decision;}
-        if(!possible.empty()){decision.mixed=true;return decision;}
         // A scripted ALT_EFFECT attack can legitimately lack an ordinary
         // collision transition; preserve its own cast in that narrow case.
         if(isSpellFollowupAction(after.action) && afterOrigin.valid() &&
