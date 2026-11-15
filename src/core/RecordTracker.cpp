@@ -1,30 +1,92 @@
 #include "RecordTracker.hpp"
 #include <algorithm>
 namespace whm {
-void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; }
-void RecordTracker::commit() { if (active_.damage > best_.damage) best_ = active_; active_ = {}; }
+void RecordTracker::reset() { casts_.clear(); best_ = {}; archivedBest_ = {}; unattributedPeak_ = 0; bestInstance_ = 0; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; comboPeak_ = 0; inferred_ = {}; }
+void RecordTracker::nextRound() {
+    if(best_.damage>archivedBest_.damage)archivedBest_=best_;
+    casts_.clear();bestInstance_=0;active_={};lastFrame_=0;lastHitFrame_=0;
+}
+void RecordTracker::observeInferred(int action,int card,int damage,double confidence) {
+    if(damage<=0||action<300||action>=690)return;
+    if(inferred_.valid&&damage<inferred_.damage)return; // keep the strongest explanation
+    // A larger but far less plausible explanation must not displace a solid
+    // one (the delayed 4000@0.90 SC vs a loose 5000@0.40 full-table fit).
+    if(inferred_.valid&&confidence+0.15<inferred_.confidence)return;
+    inferred_={true,action,card,damage,confidence};
+}
+void RecordTracker::observeCombo(int comboDamage) {
+    // comboDamage is the game's cumulative combo damage. It is authoritative
+    // even when HitAttribution cannot identify a cast. Keep the match peak;
+    // a new round resets the counter but not the observed peak, matching the
+    // existing "keep best across rounds" policy.
+    if(comboDamage>comboPeak_)comboPeak_=comboDamage;
+}
+void RecordTracker::commit() {
+    // Defensive guard for the legacy HP-only API: an unattributed episode can
+    // never become the BEST HIT, even if it carries a larger HP delta.
+    if (active_.attributed && active_.damage > best_.damage) best_ = active_;
+    active_ = {};
+}
 void RecordTracker::finish() { commit(); }
 void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint64_t instance,
-                                  bool mixedSources) {
-    if(frame<lastFrame_)casts_.clear(); // new round, preserve match best
+                                  bool mixedSources,int damageCeiling,bool selfDamage) {
+    if(frame<lastFrame_)nextRound();
     lastFrame_=frame;
     if(damage<=0)return;
     if(mixedSources) {
-        // E.g. delayed 5C + j6A: 3057 is their combined damage, not a 3057
-        // j6A nor a single 3057 "UNKNOWN MOVE". Preserve the last real best.
+        // The source cannot be divided into separate moves, but the damage
+        // really happened. Keep it as observed-but-unranked damage: never
+        // claim it was all j6A, and never surface it as an "UNKNOWN MOVE"
+        // record. DamageTrace.log shows these frames are 5C+j6A combos
+        // (2280/777, 1956/206/795/65), not single moves.
         unattributedDamage_+=damage;
+        unattributedPeak_=std::max(unattributedPeak_,damage);
         return;
     }
     if(action<300||action>=690||!instance) {
+        // An unresolvable frame is still counted, but it is not a move.
         unattributedDamage_+=damage;
-        if(damage>best_.damage)best_={damage,-1,false,false};
+        unattributedPeak_=std::max(unattributedPeak_,damage);
         return;
     }
     auto &record=casts_[instance];
+    if(record.rejected){unattributedDamage_+=damage;unattributedPeak_=std::max(unattributedPeak_,damage);return;}
     if(record.damage && record.actionId!=action)return; // invalid source reuse
-    record.actionId=action;record.attributed=true;record.isSpell=action>=600;
+    // A cast cannot deal more than its own move's FULL projectile stream.
+    // The caller supplies 1.5x the calibrated full-stream damage, which still
+    // allows weather / attack / counter-hit multipliers. DamageTrace
+    // (2026-11-15 12:20): a spell's 2000+1500 was credited to j.5C (414)
+    // and became "j.5C 3500" because casts_[instance] had no bound.
+    // Cleista's summary.damage (1107) was only ONE 8-bullet measurement; the
+    // move actually spawns 18 bullets (density "C1x18") and a real full
+    // j.5C lands 2280, so the ceiling must not use that sample.
+    if(damageCeiling>0 && record.damage+damage>damageCeiling) {
+        const int already=record.damage;
+        record.rejected=true;
+        record.damage=0;
+        record.attributed=false;
+        // Every point this bad identity absorbed was still REAL damage.
+        unattributedDamage_+=already+damage;
+        if(bestInstance_==instance){
+            best_=archivedBest_;bestInstance_=0;
+            // Rebuild from the surviving casts. Simply blanking best_ would
+            // discard an earlier legitimate record (e.g. a clean 500 5A)
+            // and turn the HUD into a blank card after a rejected spell.
+            for(const auto &kv:casts_){
+                const auto &r=kv.second;
+                if(r.rejected||!r.attributed)continue;
+                if(r.damage>best_.damage){best_=r;bestInstance_=kv.first;}
+            }
+        }
+        return;
+    }
+    record.actionId=action;record.attributed=true;record.isSpell=action>=600;record.selfDamage=selfDamage;
     record.damage+=damage;
-    if(record.damage>best_.damage)best_=record;
+    if(record.damage>best_.damage){best_=record;bestInstance_=instance;}
+}
+int RecordTracker::castDamage(std::uint64_t instance) const {
+    const auto it=casts_.find(instance);
+    return it==casts_.end()||it->second.rejected?0:it->second.damage;
 }
 void RecordTracker::observe(int beforeHP, int afterHP, int action, unsigned frame) {
     // Frame counter may restart on the next ROUND. Preserve the match record.

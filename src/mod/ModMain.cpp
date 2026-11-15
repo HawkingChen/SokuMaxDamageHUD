@@ -2,6 +2,7 @@
 // No network packets, game damage, RNG or inputs are modified.
 #include <SokuLib.hpp>
 #include "DamageEngine.hpp"
+#include "DamageInference.hpp"
 #include "MoveCatalog.hpp"
 #include "WikiMax.hpp"
 #include "RecordTracker.hpp"
@@ -21,6 +22,7 @@
 #include "OpeningCounter.hpp"
 #include "HitSnapshots.hpp"
 #include "GameAssets.hpp"
+#include "NativeEvents.hpp"
 
 #include <windows.h>
 #include <algorithm>
@@ -36,8 +38,37 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <tuple>
+#include <utility>
 
 namespace {
+// The factory is character-specific. Check the ENTIRE pinned SokuLib roster
+// at compile time; testing one character cannot establish factory coverage.
+template<class> struct FactoryTable;
+template<class T,unsigned V> struct FactoryTable<SokuLib::v2::VTableGameObjectList<T,V>> {
+    static constexpr std::uintptr_t address=V;
+};
+using FactoryRoster=std::tuple<
+    SokuLib::v2::GameObjectList_Reimu,SokuLib::v2::GameObjectList_Marisa,
+    SokuLib::v2::GameObjectList_Sakuya,SokuLib::v2::GameObjectList_Alice,
+    SokuLib::v2::GameObjectList_Patchouli,SokuLib::v2::GameObjectList_Youmu,
+    SokuLib::v2::GameObjectList_Remilia,SokuLib::v2::GameObjectList_Yuyuko,
+    SokuLib::v2::GameObjectList_Yukari,SokuLib::v2::GameObjectList_Suika,
+    SokuLib::v2::GameObjectList_Udonge,SokuLib::v2::GameObjectList_Aya,
+    SokuLib::v2::GameObjectList_Komachi,SokuLib::v2::GameObjectList_Iku,
+    SokuLib::v2::GameObjectList_Tenshi,SokuLib::v2::GameObjectList_Sanae,
+    SokuLib::v2::GameObjectList_Chirno,SokuLib::v2::GameObjectList_Meirin,
+    SokuLib::v2::GameObjectList_Utsuho,SokuLib::v2::GameObjectList_Suwako>;
+template<std::size_t... I> constexpr bool factoryRosterMatches(std::index_sequence<I...>) {
+    return ((FactoryTable<std::tuple_element_t<I,FactoryRoster>>::address==whm::native::factorySites[I][0])&&...);
+}
+static_assert(factoryRosterMatches(std::make_index_sequence<std::tuple_size_v<FactoryRoster>>{}));
+// Native probe offsets must agree with the pinned x86 SokuLib layout.
+static_assert(offsetof(SokuLib::v2::GameObjectBase, HP)==0x184);
+static_assert(offsetof(SokuLib::v2::GameObjectBase, gameData)+offsetof(SokuLib::v2::GameObjectBase::GameInfo, owner)==0x168);
+static_assert(offsetof(SokuLib::v2::GameObjectBase, gameData)+offsetof(SokuLib::v2::GameObjectBase::GameInfo, ally)==0x16c);
+static_assert(offsetof(SokuLib::v2::GameObject, handleId)==0x350);
+static_assert(offsetof(SokuLib::v2::GameObject, parentObject)==0x368);
 HMODULE g_module = nullptr;
 bool g_hooksInstalled = false;
 bool g_fontReady = false;
@@ -56,10 +87,23 @@ std::vector<HudRow> g_rows;
 SokuLib::DrawUtils::RectangleShape g_background;
 whm::MoveCatalog g_catalog;
 whm::WikiMaxCatalog g_wikiMax;
+whm::DamageInference g_inference;
 whm::OpeningCounterCatalog g_openingCounters;
 whm::RecordTracker g_record;
 whm::HitAttribution g_hitAttribution;
+whm::NativeAttribution g_nativeAttribution;
+// Evidence collected during the CURRENT combo. Combo damage is cumulative,
+// so the solver always explains the whole combo from its starting HP.
+int g_comboStartHP = 10000;
+int g_comboActorAction = -1;
+unsigned g_lastInferFrame = 0;
+std::vector<int> g_comboOrigins;
+whm::InferenceResult g_lastInfer{};
 bool g_allowUnverifiedProbes = false;
+bool g_damageTraceEnabled = false;
+std::ofstream g_damageTraceFile;
+bool g_nativeTraceEnabled = false;
+std::ofstream g_nativeTraceFile;
 std::vector<whm::Move> g_probeCache;
 int g_probeCharacter = -1;
 const void *g_probeDataSource = nullptr;
@@ -95,6 +139,30 @@ std::string dllFolder() {
     // ANSI module filename breaks image/data loading in non-ASCII folders.
     const auto utf8=moduleFolder().u8string();
     return std::string(utf8.begin(),utf8.end())+"/";
+}
+
+// Diagnostics only: never feed these unvalidated events into HUD records.
+void flushNativeEvents() {
+    if(!g_nativeTraceFile || (!whm::native::count && !whm::native::dropped))return;
+    auto &out=g_nativeTraceFile;
+    for(unsigned i=0;i<whm::native::count;++i) {
+        const auto &e=whm::native::events[i];
+        out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":"ACTION")
+           <<" frame="<<e.frame<<" object="<<std::hex<<e.object<<std::dec
+           <<":"<<e.generation<<" owner="<<std::hex<<e.owner
+           <<" ally="<<e.ally<<" victim="<<e.victim
+           <<" creator="<<e.creator<<std::dec<<":"<<e.creatorGeneration
+           <<" parent="<<std::hex<<e.parent<<" caller="<<e.caller<<std::dec
+           <<" action="<<e.action<<" seq="<<e.sequence<<" box="<<e.boxAction
+           <<" ownerAction="<<e.ownerAction<<" victimAction="<<e.victimAction
+           <<" cast="<<e.cast<<":"<<e.castAction<<" path="<<e.path
+           <<" self="<<(e.owner==e.victim)<<" damage="<<e.damage
+           <<" victimHP="<<e.hp<<" ownerHP="<<e.ownerHP
+           <<" combo="<<e.comboHits<<":"<<e.comboDamageBefore
+           <<" hpProtected="<<e.protectedHP<<"\n";
+    }
+    if(whm::native::dropped)out<<"DROPPED frame="<<whm::native::frame<<" count="<<whm::native::dropped<<"\n";
+    out.flush();
 }
 
 void saveHudPreferences() {
@@ -186,7 +254,8 @@ std::string cardName(const SokuLib::v2::Player &player, unsigned short cardId) {
     if (!utf8.empty()) utf8.pop_back(); return utf8;
 }
 
-std::string actionName(const SokuLib::v2::Player &player, int action) {
+std::string actionName(const SokuLib::v2::Player &player, int action,
+                       int observedDamage = 0) {
     static const char *const normals[] = {
         "5A", "f5A", "6A", "2A", "3A", "DA", "j5A", "j6A", "j2A", "j8A"
     };
@@ -194,11 +263,27 @@ std::string actionName(const SokuLib::v2::Player &player, int action) {
     if (action >= 500 && action < 600) {
         int card=whm::skillCardForAction(static_cast<int>(player.characterIndex),action);
         bool air=(action-500)%5>=2;char button=(action-500)%5%2?'C':'B';
+        // A charged variant ("236[B]") shares its action id with the tap
+        // version ("236B"). DamageTrace.log 13:18: frame 648 dealt 880 and
+        // frame 956 dealt 2200, BOTH action=505 seq=2. The game exposes no
+        // charge flag, so choose the notation whose static damage best
+        // matches the measured hit. Keeping the bracket makes the charged
+        // variant visible on the BEST HIT card.
+        std::vector<whm::NotationCandidate> candidates;
+        std::string chosenName;
         for(const auto &m:g_staticMoves) {
             if(m.character!=static_cast<int>(player.characterIndex)||m.card!=card||m.notation.empty())continue;
             bool entryAir=m.notation.rfind("j.",0)==0;
-            if(entryAir==air&&m.notation.back()==button)return m.name+" · "+m.notation;
+            std::string cmd=m.notation;
+            cmd.erase(std::remove(cmd.begin(),cmd.end(),'['),cmd.end());
+            cmd.erase(std::remove(cmd.begin(),cmd.end(),']'),cmd.end());
+            if(entryAir!=air||cmd.empty()||cmd.back()!=button)continue;
+            candidates.push_back({m.notation,m.damage});
+            if(chosenName.empty())chosenName=m.name;
         }
+        if(!candidates.empty())
+            return chosenName+" · "+
+                   whm::pickNotationByDamage(candidates,observedDamage);
         if(card>=0)return cardName(player,static_cast<unsigned short>(card));
     }
     switch(action) {
@@ -228,6 +313,16 @@ std::array<std::string, 3> lookupNames(int character, int card,
                                        const std::string &fallback) {
     auto exact = g_moveNames.find(moveNameKey(character, card, lookup));
     if (exact != g_moveNames.end()) return exact->second.names;
+    // Charged variants ("236[B]") have no own MoveNames.tsv row. Reuse the
+    // localized name of the tap command instead of showing the Chinese
+    // fallback in every UI language; the bracket is added by the renderer.
+    if (lookup.find('[') != std::string::npos) {
+        std::string tap = lookup;
+        tap.erase(std::remove(tap.begin(), tap.end(), '['), tap.end());
+        tap.erase(std::remove(tap.begin(), tap.end(), ']'), tap.end());
+        auto it = g_moveNames.find(moveNameKey(character, card, tap));
+        if (it != g_moveNames.end()) return it->second.names;
+    }
     auto byCard = g_moveNames.find(moveNameKey(character, card, ""));
     if (byCard != g_moveNames.end()) return byCard->second.names;
     std::string safe = fallback;
@@ -253,10 +348,11 @@ struct MoveLabel {
     std::array<std::string, 3> names{};
     std::string notation, fallback;
 };
-MoveLabel labelForAction(const SokuLib::v2::Player &player, int action) {
+MoveLabel labelForAction(const SokuLib::v2::Player &player, int action,
+                         int observedDamage = 0) {
     const int character = static_cast<int>(player.characterIndex);
     const int card=whm::cardForAction(character,action);
-    const std::string raw = actionName(player, action);
+    const std::string raw = actionName(player, action, observedDamage);
     const std::string separator = " · "; // "·" is two UTF-8 bytes, not one
     const std::size_t cut = raw.rfind(separator);
     std::string fallback = cut == std::string::npos ? raw : raw.substr(0, cut);
@@ -552,19 +648,28 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                      cardName(*own,card.id),true));
         if(view.hand.size()==5)break;
     }
+    view.recordIncomplete=g_record.unattributedDamage()>0;
+    view.nativeAvailable=whm::native::installed;
     const auto &best=g_record.best();
-    if(best.attributed&&best.damage>0){
+    const whm::RecordSource recordSource=whm::pickRecordSource(
+        best,g_record.inferred(),g_record.comboPeak(),g_record.hasObservedDamage());
+    if(recordSource==whm::RecordSource::Verified){
         const int action=best.actionId;
         const int card=whm::cardForAction(view.character,action);
+        // A shared action ID does not prove a charge variant from damage alone.
         const MoveLabel label=labelForAction(*own,action);
         PanelCard rec=makeCard(view.character,card,best.damage,
                                label.notation,label.notation,label.fallback,false);
         rec.names=label.names;
         view.record=rec;
-    } else if(best.damage>0) {
-        view.record.damage=best.damage;
+        if(best.selfDamage) {
+            static const char *const tag[3]={"（自伤）","（自傷）"," (SELF-DAMAGE)"};
+            for(int i=0;i<3;++i)view.record.names[i]+=tag[i];
+        }
+    } else if(recordSource==whm::RecordSource::Unattributed) {
+        view.record.damage=g_record.unattributedPeak();
         view.record.approximate=false;
-        view.record.names={"未识别招式","不明な技","UNKNOWN MOVE"};
+        view.record.names={"未识别伤害","帰属不明のダメージ","UNATTRIBUTED DAMAGE"};
     }
     {std::lock_guard<std::mutex> guard(g_panelMutex);g_panelView=std::move(view);}
     return {{"什么最痛",-1}};
@@ -996,6 +1101,13 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         }
         g_record.reset();
         g_hitAttribution.reset();
+        g_nativeAttribution.reset();
+        whm::native::resetActors();
+        g_comboStartHP=10000;
+        g_comboActorAction=-1;
+        g_comboOrigins.clear();
+        g_lastInferFrame=0;
+        g_lastInfer={};
         g_displayText.clear();
         g_rows.clear();
         g_lastRefresh = 0;
@@ -1005,7 +1117,17 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         g_probeDataSource = nullptr;
     }
     // Keep the best hit across round transitions; only re-create the HUD.
-    if (mgr->frameCount < g_lastFrame) { g_lastRefresh = 0; g_hitAttribution.reset(); }
+    if (mgr->frameCount < g_lastFrame) {
+        g_record.nextRound();
+        g_lastRefresh = 0;
+        g_hitAttribution.reset();
+        g_nativeAttribution.reset();
+        whm::native::resetActors();
+        g_comboOrigins.clear();
+        g_comboActorAction=-1;
+        g_lastInferFrame=0;
+        g_lastInfer={};
+    }
     g_lastFrame = mgr->frameCount;
     // Spectator/replay and unsupported sessions MUST NOT read or show either
     // player as "self". Run the original engine update without any HUD work.
@@ -1017,10 +1139,15 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
                                  : mgr->leftCharacterManager.objectBase.hp;
     const auto *ownBefore=viewPlayer(mgr,side);
     const auto *targetBefore=viewPlayer(mgr,1-side);
+    const int ownHPBefore=ownBefore->HP;
     const auto actorBefore=whm::actorContact(*ownBefore);
-    const auto objectsBefore=whm::projectileContacts(*ownBefore);
+    whm::ProjectileSnapshotDiag projectilePreDiag;
+    const auto objectsBefore=g_damageTraceEnabled?whm::projectileContacts(*ownBefore,&projectilePreDiag):std::vector<whm::ProjectileContact>{};
     const auto comboBefore=whm::comboReading(*ownBefore,*targetBefore);
+    whm::native::begin(mgr->frameCount,viewPlayer(mgr,0),viewPlayer(mgr,1));
     const int result = (mgr->*g_originalProcess)();
+    whm::native::end();
+    if(g_nativeTraceEnabled)flushNativeEvents();
     if (ownSide() != side || &SokuLib::getBattleMgr()!=mgr ||
         (SokuLib::sceneId!=SokuLib::SCENE_BATTLE && SokuLib::sceneId!=SokuLib::SCENE_BATTLESV && SokuLib::sceneId!=SokuLib::SCENE_BATTLECL)) {
         g_panelWanted.store(false);
@@ -1030,15 +1157,72 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
                                 : mgr->leftCharacterManager.objectBase.hp;
     const auto *attacker=viewPlayer(mgr,side);
     const auto *target=viewPlayer(mgr,1-side);
-    const auto source=g_hitAttribution.observeDetailed(
-        actorBefore,whm::actorContact(*attacker),
-        objectsBefore,whm::projectileContacts(*attacker));
-    const int dealt=whm::observedDamage(before,after,comboBefore,
-        whm::comboReading(*attacker,*target));
-    // NEVER attribute the whole 5C + j6A (or other mixed-source) frame to
-    // the sole detected contact, and never rank the aggregate as one move.
-    g_record.observeDamage(dealt,source.origin.action,mgr->frameCount,
-                           source.origin.instance,source.mixed);
+    whm::ProjectileSnapshotDiag projectilePostDiag;
+    const auto actorAfter=whm::actorContact(*attacker);
+    const auto objectsAfter=g_damageTraceEnabled?whm::projectileContacts(*attacker,&projectilePostDiag):std::vector<whm::ProjectileContact>{};
+    const auto comboAfter=whm::comboReading(*attacker,*target);
+    const auto source=g_damageTraceEnabled?g_hitAttribution.observeDetailed(
+        actorBefore,actorAfter,objectsBefore,objectsAfter):whm::HitAttributionResult{};
+    const int dealt=whm::observedDamage(before,after,comboBefore,comboAfter);
+    // Actual records come only from per-hit engine events. HP/combos are
+    // diagnostic corroboration, never a numerical guess of a move's name.
+    const auto nativeHits=g_nativeAttribution.consume(
+        std::span<const whm::NativeEvent>(whm::native::events.data(),whm::native::count),
+        reinterpret_cast<std::uintptr_t>(attacker),whm::native::dropped!=0);
+    for(const auto &h:nativeHits)
+        g_record.observeDamage(h.damage,h.action,mgr->frameCount,h.instance,false,0,h.self);
+    // Unsupported or bypassed engine paths still retain evidence of damage,
+    // but a frame's net HP loss is never attributed to the current animation.
+    if(nativeHits.empty()) {
+        const int unknown=std::max(std::max(0,before-after),std::max(0,ownHPBefore-attacker->HP));
+        if(unknown>0)g_record.observeDamage(unknown,-1,mgr->frameCount,0,true);
+    }
+    // Opt-in local diagnostics. Snapshots corroborate native events; neither
+    // the old contact heuristic nor numeric inference supplies a record.
+    if(g_damageTraceEnabled && g_damageTraceFile &&
+       (dealt>0 || ownHPBefore!=attacker->HP ||
+        (actorBefore.action!=actorAfter.action && (actorBefore.action>=600 || actorAfter.action>=600)) ||
+        actorBefore.action==410 || actorAfter.action==410 ||
+        (static_cast<int>(attacker->characterIndex)==9 &&
+         (actorBefore.action==307 || actorAfter.action==307)))) {
+        auto &out=g_damageTraceFile;
+        out<<"frame="<<mgr->frameCount<<" char="<<static_cast<int>(attacker->characterIndex)
+           <<" action="<<actorBefore.action<<">"<<actorAfter.action
+           <<" seq="<<actorBefore.sequence<<">"<<actorAfter.sequence
+           <<" hp="<<before<<">"<<after<<" ownHP="<<ownHPBefore<<">"<<attacker->HP<<" dealt="<<dealt
+           <<" combo="<<comboBefore.hits<<":"<<comboBefore.damage
+           <<">"<<comboAfter.hits<<":"<<comboAfter.damage
+           <<" source="<<source.origin.action<<":"<<source.origin.instance
+           <<" mixed="<<source.mixed
+           <<" hits="<<source.detectedContacts
+           <<" possible="<<source.plausibleOrigins
+           <<" live="<<source.liveProjectiles
+           <<" unresolved="<<source.unownedOrigins
+           <<" snapshot="<<projectilePreDiag.status<<"/"<<projectilePostDiag.status
+           <<" list="<<projectilePreDiag.listCount<<"/"<<projectilePostDiag.listCount
+           <<" owned="<<projectilePreDiag.accepted<<"/"<<projectilePostDiag.accepted;
+        auto show=[&](const char *label,const std::vector<whm::ProjectileContact> &v){
+            out<<" "<<label<<"=[";
+            for(size_t i=0;i<v.size()&&i<16;++i) {
+                if(i)out<<";";
+                const auto &o=v[i];
+                out<<std::hex<<o.id<<":"<<o.parent<<std::dec
+                   <<":"<<o.generation<<":"<<o.collision<<":"
+                   <<o.limit<<":"<<o.hitBoxes;
+            }
+            if(v.size()>16)out<<";...";
+            out<<"]";
+        };
+        show("pre",objectsBefore);
+        show("post",objectsAfter);
+        out<<" crate="<<comboAfter.comboRate
+           <<" profiles="<<g_inference.size()
+           <<" infer="<<g_lastInfer.primaryAction<<":"<<g_lastInfer.primaryDamage
+           <<" conf="<<static_cast<int>(g_lastInfer.confidence*100)
+           <<" explain=["<<g_lastInfer.reason<<"]"
+           <<" best="<<g_record.best().actionId<<":"<<g_record.best().damage<<"\n";
+        out.flush();
+    }
     if (mgr->frameCount - g_lastRefresh >= 12 || g_lastRefresh == 0) {
         g_lastRefresh = mgr->frameCount;
         updateRows(composeHUD(mgr));
@@ -1050,6 +1234,8 @@ void __fastcall onExit(SokuLib::BattleManager *mgr) {
     g_panelWanted.store(false);
     g_record.reset();
     g_hitAttribution.reset();
+    g_nativeAttribution.reset();
+    whm::native::resetActors();
     g_probeCache.clear();
     g_probeCharacter = -1;
     g_probeDataSource = nullptr;
@@ -1077,6 +1263,18 @@ void loadSettings() {
     const auto folder=moduleFolder();
     const auto ini=folder/L"SokuMaxDamageHUD.ini";
     g_allowUnverifiedProbes = GetPrivateProfileIntW(L"Damage", L"EnableExperimentalFrameProbe", 0, ini.c_str()) != 0;
+    g_damageTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableDamageTrace", 0, ini.c_str()) != 0;
+    if(g_damageTraceFile.is_open())g_damageTraceFile.close();
+    if(g_damageTraceEnabled) {
+        g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
+        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.10; numerical inference disabled\n";
+    }
+    g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
+    if(g_nativeTraceEnabled) {
+        g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.10; all-character factories and update contexts\n";
+        else g_nativeTraceEnabled=false;
+    }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
     g_y = GetPrivateProfileIntW(L"HUD", L"Y", g_y, ini.c_str());
     g_w = std::max(170, std::min(400, static_cast<int>(GetPrivateProfileIntW(L"HUD", L"Width", g_w, ini.c_str()))));
@@ -1116,6 +1314,11 @@ void loadSettings() {
     }
     std::ifstream in(folder/L"MoveProfiles.txt");
     if (in) g_catalog.read(in);
+    // Per-hit fingerprints from Cleista's framedata (20 characters, 1677
+    // casts). Used ONLY to explain combo totals that HitAttribution could not
+    // attribute; it never writes game state and never replaces verified casts.
+    std::ifstream profiles(folder/L"HitProfiles.tsv");
+    if (profiles) g_inference.read(profiles);
     std::ifstream wiki(folder/L"WikiMaxProfiles.txt");
     if (wiki) g_wikiMax.read(wiki);
     std::ifstream opening(folder/L"OpeningCounter.txt");
@@ -1140,6 +1343,12 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE self, HMODULE) {
     DWORD ignore = 0;
     VirtualProtect(reinterpret_cast<void *>(RDATA_SECTION_OFFSET), RDATA_SECTION_SIZE, old, &ignore);
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
+    const bool nativeOK=whm::native::install();
+    if(g_nativeTraceFile) {
+        g_nativeTraceFile<<"# nativeHooks="<<(nativeOK?"installed":"DISABLED: unsupported or modified code / allocation failure")<<"\n";
+        g_nativeTraceFile.flush();
+    }
+    if(g_damageTraceFile)g_damageTraceFile<<"# nativeHooks="<<nativeOK<<"; inferred move records disabled\n";
     HANDLE thread = CreateThread(nullptr, 0, panelThread, nullptr, 0, nullptr);
     if (thread) CloseHandle(thread);
     g_hooksInstalled = true;

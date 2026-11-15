@@ -61,6 +61,7 @@ struct PanelView {
     bool systemCursorVisible = true;
     std::vector<PanelEffect> effects;
     PanelCard strongest, record;
+    bool recordIncomplete=false, nativeAvailable=true;
     std::vector<PanelCard> hand;
 };
 
@@ -88,7 +89,12 @@ inline std::wstring panelCardLabel(const PanelCard &card, whm::HudLanguage lang,
     if (chosen.empty()) return missing;
     // Normals store their command as the "name" in the source spelling (j.2A).
     // cardDisplayName prints one ALL-CAPS command instead of "j.2A · J2A".
-    return panelWide(whm::cardDisplayName(chosen, card.notation));
+    std::wstring text = panelWide(whm::cardDisplayName(chosen, card.notation));
+    // A bracketed button means the charged variant. Label it explicitly so a
+    // 2200 charged Oni Spirit Bomb is never read as the 880 tap version.
+    if (whm::isChargedNotation(card.notation))
+        text += panelWide(whm::chargedSuffix(lang));
+    return text;
 }
 
 // Convert existing local card PNGs (icons/<character>-<card>.png) with the
@@ -258,6 +264,40 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
         SelectObject(dc, old);
         DeleteObject(font);
     };
+    // Same font/box as write(), but card captions keep their COMMAND suffix.
+    // DT_END_ELLIPSIS on the whole string cut off " · 236[B/C]" and left the
+    // player unable to read the actual input; ellipsize the NAME instead.
+    auto writeCardTitle = [&](const std::wstring &value, int x, int y,
+                              int w, int h, int size, COLORREF color) {
+        HFONT font = CreateFontW(-size, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                DEFAULT_PITCH, whm::uiFontFamily(lang));
+        HGDIOBJ old = SelectObject(dc, font);
+        SetTextColor(dc, color);
+        auto measure = [&](const std::wstring &s) -> int {
+            SIZE sz{0, 0};
+            if (!s.empty())
+                GetTextExtentPoint32W(dc, s.c_str(), static_cast<int>(s.size()), &sz);
+            return sz.cx;
+        };
+        const auto layout = whm::layoutCardTitle(value, w, measure);
+        const UINT base = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
+        if (!layout.split) {
+            RECT r{x, y, x + w, y + h};
+            DrawTextW(dc, value.c_str(), -1, &r, base | DT_END_ELLIPSIS);
+        } else if (layout.tailEllipsis) {
+            RECT r{x, y, x + w, y + h};
+            DrawTextW(dc, layout.tail.c_str(), -1, &r, base | DT_END_ELLIPSIS);
+        } else {
+            RECT hr{x, y, x + layout.headWidth, y + h};
+            DrawTextW(dc, layout.head.c_str(), -1, &hr, base | DT_END_ELLIPSIS);
+            RECT tr{x + layout.headWidth, y, x + w, y + h};
+            DrawTextW(dc, layout.tail.c_str(), -1, &tr, base); // never truncated
+        }
+        SelectObject(dc, old);
+        DeleteObject(font);
+    };
     auto number = [&](const std::wstring &value, int x, int y, int w, int h,
                       int fontSize, UINT alignment = DT_CENTER,
                       const whm::NumberPalette *colors = nullptr) {
@@ -415,12 +455,12 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
             const auto fallback=card.card<0&&!card.notation.empty()?panelWide(card.notation):localized(whm::HudTextKey::SpellType);
             art(card.character,card.card,20,y+40+(cardH-60-iconH)/2,iconW,iconH,fallback);
             const int tx=32+iconW,tw=378-tx;
-            write(display,tx,y+39,tw,32,19,cream);
+            writeCardTitle(display,tx,y+39,tw,32,19,cream);
             const auto value=card.damage>0?(card.approximate?L"≈":L"")+std::to_wstring(card.damage):L"—";
             const int numberSize=std::clamp(cardH/3,36,70);
             number(value,tx,y+72,tw,cardH-91,numberSize);
-            write(localized(focused?whm::HudTextKey::Theoretical:whm::HudTextKey::MatchBest),
-                tx,y+cardH-19,tw,15,10,faded,DT_CENTER);
+            write(localized(focused?whm::HudTextKey::Theoretical:!v.nativeAvailable?whm::HudTextKey::RecordUnavailable:v.recordIncomplete?whm::HudTextKey::RecordIncomplete:whm::HudTextKey::MatchBest),
+                tx,y+cardH-19,tw,15,10,(!focused&&(v.recordIncomplete||!v.nativeAvailable))?RGB(255,190,90):faded,DT_CENTER);
         };
         portraitCard(92+effectsH,v.strongest,v.suikaGiantActive?whm::HudTextKey::StrongestNormal:whm::HudTextKey::Strongest,whm::HudTextKey::NoSkill,true);
         portraitCard(100+effectsH+cardH,v.record,whm::HudTextKey::Record,whm::HudTextKey::NoRecord,false);
@@ -628,7 +668,7 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
             if(notation.size()<=8 && !notation.empty()) fallback=notation;
         }
         art(card.character,card.card,x+17,59,67,94,fallback);
-        write(display,x+103,56,250,37,20,cream);
+        writeCardTitle(display,x+103,56,250,37,20,cream);
         if(card.damage>0) {
             const std::wstring value=(card.approximate?L"≈":L"")+
                                      std::to_wstring(card.damage);
@@ -636,7 +676,7 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
         } else {
             write(L"—",x+98,102,248,49,46,faded,DT_CENTER);
         }
-        write(localized(focused?whm::HudTextKey::Theoretical:whm::HudTextKey::MatchBest),
+        write(localized(focused?whm::HudTextKey::Theoretical:!v.nativeAvailable?whm::HudTextKey::RecordUnavailable:v.recordIncomplete?whm::HudTextKey::RecordIncomplete:whm::HudTextKey::MatchBest),
               x+109,151,240,17,11,RGB(187,162,147),DT_CENTER);
     };
     highlight(224,v.suikaGiantActive ? whm::HudTextKey::StrongestNormal

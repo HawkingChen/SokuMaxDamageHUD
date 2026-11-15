@@ -7,7 +7,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
+#include <vector>
 
 namespace whm {
 
@@ -16,7 +18,7 @@ enum class HudLanguage { Chinese = 0, Japanese = 1, English = 2 };
 enum class HudTextKey {
     PanelTitle, Strongest, StrongestNormal, Record, Hand, SpellMax,
     NoEffects, NoHand, NoSkill, NoRecord,
-    Theoretical, MatchBest, Weather, Unknown,
+    Theoretical, MatchBest, RecordIncomplete, RecordUnavailable, Weather, Unknown,
     SpecialType, SpellType, Guts, FirstHit,
     KeyCount
 };
@@ -38,6 +40,8 @@ inline constexpr HudTextEntry kHudTexts[] = {
     /* NoRecord    */ {"尚未记录命中", "ヒット記録なし", "NO HIT RECORDED"},
     /* Theoretical */ {"理论最大值 · 估算", "理論最大値・推定", "THEORETICAL MAX · ESTIMATE"},
     /* MatchBest   */ {"本局最高 · 命中", "この対戦の最大ダメージ", "MATCH BEST · HIT"},
+    /* RecordIncomplete */ {"存在未识别命中", "帰属不明のヒットあり", "UNASSIGNED HITS"},
+    /* RecordUnavailable */ {"伤害读取不可用", "ダメージ取得不可", "DAMAGE CAPTURE UNAVAILABLE"},
     /* Weather     */ {"天气", "天気", "WEATHER"},
     /* Unknown     */ {"未知", "不明", "UNKNOWN"},
     /* SpecialType */ {"必杀技", "必殺技", "SKILL"},
@@ -120,6 +124,78 @@ inline std::string cardDisplayName(const std::string &name,
     if (command.empty()) return caption;
     if (sameNotation(name, command)) return command;
     return caption + " · " + command;
+}
+
+// A bracketed button ("236[B]", "j.236[C]") is the FULLY CHARGED variant of
+// the same command. The game exposes no charge flag: DamageTrace.log has
+// action=505 seq=2 dealing 880 (tap) and 2200 (charged) with identical
+// action/sequence, so the two are only distinguishable by their damage.
+// Render the distinction explicitly instead of showing a bare "[B]".
+inline bool isChargedNotation(const std::string &notation) {
+    return notation.find('[') != std::string::npos;
+}
+inline const char *chargedSuffix(HudLanguage lang) {
+    static const char *const kSuffix[3] = {
+        "（蓄力）", "（溜め）", " (CHARGE)"};
+    const int i = static_cast<int>(lang);
+    return kSuffix[(i >= 0 && i < 3) ? i : 0];
+}
+
+struct CardTitleLayout {
+    bool split = false;         // false: draw the whole caption as one string
+    std::wstring head;          // the (truncatable) move name
+    std::wstring tail;          // " · COMMAND" plus any charge tag
+    int headWidth = 0;          // pixels left for the name
+    bool tailEllipsis = false;  // even the suffix alone does not fit
+};
+// Card captions are "NAME · COMMAND (+ charge tag)". Windows' DT_END_ELLIPSIS
+// truncates the END, which hides the command ("Meteonic Debris · 236[...").
+// Reserve the command suffix first and ellipsize only the NAME. `measure`
+// returns the pixel width of a string in the target font.
+template <class Measure>
+inline CardTitleLayout layoutCardTitle(const std::wstring &text, int width,
+                                       Measure measure) {
+    CardTitleLayout out;
+    if (width <= 0) return out;
+    if (measure(text) <= width) return out;   // everything fits: keep old look
+    const std::wstring sep = L" · ";
+    const std::size_t cut = text.rfind(sep);  // LAST separator protects the suffix
+    if (cut == std::wstring::npos) return out; // no command to protect
+    out.head = text.substr(0, cut);
+    out.tail = text.substr(cut);
+    const int tailWidth = measure(out.tail) + 6; // padding for GDI rounding
+    out.split = true;
+    if (tailWidth >= width) {
+        out.head.clear();
+        out.tailEllipsis = true;  // degenerate: ellipsize the suffix itself
+        return out;
+    }
+    out.headWidth = width - tailWidth;
+    return out;
+}
+
+struct NotationCandidate {
+    std::string notation;   // keeps the brackets for a charged variant
+    int damage = 0;         // static neutral damage of that variant
+};
+// Pick between the tap command and its charged variant by MEASURED damage.
+// DamageTrace.log 13:18: action=505 seq=2 dealt 880 (tap) at frame 648 and
+// 2200 (charged) at frame 956 -- identical action/sequence, no charge flag.
+// With no measured damage, keep the FIRST (tap) entry: callers that only
+// resolve a command name must behave exactly as before.
+inline std::string pickNotationByDamage(
+    const std::vector<NotationCandidate> &candidates, int observedDamage) {
+    if (candidates.empty()) return {};
+    if (observedDamage <= 0) return candidates.front().notation;
+    std::size_t best = 0;
+    int bestDelta = std::numeric_limits<int>::max();
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const int d = candidates[i].damage;
+        const int delta = observedDamage > d ? observedDamage - d
+                                             : d - observedDamage;
+        if (delta < bestDelta) { bestDelta = delta; best = i; }
+    }
+    return candidates[best].notation;
 }
 
 // Weather text is shown only when it can actually affect damage, and never

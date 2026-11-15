@@ -14,7 +14,7 @@ jobs:
       - name: Configure x86
         run: cmake -S . -B build -A Win32 -DWHM_BUILD_TESTS=ON
       - name: Build Release
-        run: cmake --build build --config Release --target SokuMaxDamageHUD whm_tests whm_effects_tests whm_assets_tests whm_window_tests --parallel
+        run: cmake --build build --config Release --target SokuMaxDamageHUD whm_tests whm_effects_tests whm_assets_tests whm_window_tests whm_native_tests --parallel
       - name: Run tests
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Stage and validate release ZIP
@@ -28,10 +28,23 @@ jobs:
           $root = Join-Path $PWD 'dist/SokuMaxDamageHUD'
           cmake --install build --config Release --prefix $root
           if ($LASTEXITCODE -ne 0) { throw 'CMake install failed' }
-          $required = @('SokuMaxDamageHUD.dll','FrameData.txt','MoveProfiles.txt','WikiMaxProfiles.txt','SokuMaxDamageHUD.ini','MoveNames.tsv','OpeningCounter.txt','mod.json','INSTALL.txt','LICENSE')
+          $required = @('SokuMaxDamageHUD.dll','FrameData.txt','MoveProfiles.txt','WikiMaxProfiles.txt','SokuMaxDamageHUD.ini','MoveNames.tsv','OpeningCounter.txt','HitProfiles.tsv','mod.json','INSTALL.txt','LICENSE')
           foreach ($name in $required) {
             $p = Join-Path $root $name
             if (!(Test-Path -LiteralPath $p) -or (Get-Item -LiteralPath $p).Length -eq 0) { throw "Missing package file: $name" }
+          }
+          # Public packages must never enable developer trace logging.
+          $settings = Get-Content (Join-Path $root 'SokuMaxDamageHUD.ini') -Raw
+          foreach ($key in @('EnableDamageTrace','EnableNativeSettlementTrace')) {
+            if ($settings -notmatch "(?m)^\s*$key\s*=\s*0\s*$") { throw "Diagnostic logging must default OFF: $key" }
+          }
+          # Charged variants must ship with the static table, or the HUD can
+          # never rank a 2200 charged Oni Spirit Bomb above a 1483 623 Gnome.
+          $chargedLines = @(Get-Content (Join-Path $root 'FrameData.txt') |
+            Where-Object { $_ -and !$_.StartsWith('#') -and $_.Contains('[') })
+          if ($chargedLines.Count -lt 100) { throw "Charged variants missing from FrameData.txt ($($chargedLines.Count))" }
+          if (!($chargedLines -match '^9\|skill\|104\|2200\|.*\|236\[B\]\|')) {
+            throw 'Missing charged Oni Spirit Bomb candidate in FrameData.txt'
           }
           $data = [IO.File]::ReadAllBytes((Join-Path $root 'SokuMaxDamageHUD.dll'))
           if ($data.Length -lt 4096 -or $data[0] -ne 0x4d -or $data[1] -ne 0x5a) { throw 'Invalid PE/DLL header' }

@@ -13,6 +13,7 @@ endif()
 
 add_library(whm_core STATIC
     src/core/DamageEngine.cpp
+    src/core/DamageInference.cpp
     src/core/MoveCatalog.cpp
     src/core/RecordTracker.cpp
     src/core/WikiMax.cpp
@@ -75,6 +76,11 @@ if(WIN32)
         target_compile_definitions(whm_effects_tests PRIVATE NOMINMAX)
         target_compile_options(whm_effects_tests PRIVATE /UNDEBUG)
         add_test(NAME whm_effects_tests COMMAND whm_effects_tests)
+        add_executable(whm_native_tests tests/test_native_events_windows.cpp)
+        target_include_directories(whm_native_tests PRIVATE src/mod src/core)
+        target_compile_definitions(whm_native_tests PRIVATE NOMINMAX)
+        target_compile_options(whm_native_tests PRIVATE /UNDEBUG)
+        add_test(NAME whm_native_tests COMMAND whm_native_tests)
         add_executable(whm_window_tests tests/test_window_layout_windows.cpp)
         target_include_directories(whm_window_tests PRIVATE src/mod src/core)
         target_compile_options(whm_window_tests PRIVATE /UNDEBUG)
@@ -89,7 +95,7 @@ if(WIN32)
         "${whm_template_SOURCE_DIR}/lib/d3dx9.lib")
     set_target_properties(SokuMaxDamageHUD PROPERTIES PREFIX "")
     install(TARGETS SokuMaxDamageHUD LIBRARY DESTINATION . RUNTIME DESTINATION .)
-    install(FILES config/MoveProfiles.txt config/WikiMaxProfiles.txt config/FrameData.txt config/MoveNames.tsv config/OpeningCounter.txt DESTINATION .)
+    install(FILES config/MoveProfiles.txt config/WikiMaxProfiles.txt config/FrameData.txt config/MoveNames.tsv config/OpeningCounter.txt config/HitProfiles.tsv DESTINATION .)
     install(FILES config/SokuMaxDamageHUD.ini DESTINATION .)
     configure_file(config/mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/mod.json" DESTINATION .)

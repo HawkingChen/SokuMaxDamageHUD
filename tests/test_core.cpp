@@ -1,3 +1,4 @@
+#include "NativeDamage.hpp"
 #include "DamageEngine.hpp"
 #include "ActionIdentity.hpp"
 #include "MoveCatalog.hpp"
@@ -20,6 +21,8 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
+#include <utility>
+#include "DamageInference.hpp"
 
 static void testProjectileRecords() {
     using namespace whm;
@@ -75,9 +78,12 @@ static void testProjectileRecords() {
     assert(observedDamage(9758,9525,{1,242,false},{2,475,false})==233);
     assert(observedDamage(10000,9900,{0,0,true},{0,0,true})==100); // chip
     assert(observedDamage(20,0,{0,0,true},{1,500,false})==20); // HP clamp
+    // An unresolvable frame is observed but is NOT a move: it must never
+    // become the BEST HIT (that path rendered "UNKNOWN MOVE" for Suika).
     RecordTracker unknown;
     unknown.observeDamage(500,-1,1,0);
-    assert(unknown.best().damage==500&&!unknown.best().attributed);
+    assert(unknown.best().damage==0&&!unknown.best().attributed);
+    assert(unknown.unattributedDamage()==500);
     // A 4-cost Utsuho sun keeps generating child bullets after the fighter
     // becomes idle and even just after an emitter despawns. A child with an
     // explicit parent must inherit the ORIGINAL SC606 cast, not a new action.
@@ -173,6 +179,124 @@ static void testSuikaDelayed5CWithJ6A() {
     aHit.collision=1;aHit.limit=2;bHit.collision=1;bHit.limit=2;
     const auto two=bullets.observeDetailed(idle,idle,{fiveC,second},{aHit,bHit});
     assert(two.mixed&&!two.origin.valid());
+}
+
+static void testDelayedBirthAndDormantProjectileSafety() {
+    using namespace whm;
+    ActorContact idle,shoot,jump;
+    shoot.action=410;shoot.sequence=1;shoot.animationFrame=10;
+    jump.action=307;jump.sequence=1;jump.animationFrame=5;
+    jump.hitBoxes=true;jump.collision=1;jump.limit=2;
+    ProjectileContact dormant{4001,0,10,0,0,0,false,true};
+
+    // 5C's projectile remains present in the game but its damage box is
+    // dormant until explosion. No contact flag changes on the projectile in
+    // the exact frame j6A hits. The previous code silently ranked all
+    // observed damage as the j6A alone; a *latent* 5C source must veto that.
+    HitAttribution persistent;
+    // Birth without contact is not a damage event; the object retains
+    // its 5C creation identity internally until an actual hit occurs.
+    assert(!persistent.observe(shoot,shoot,{}, {dormant}).valid());
+    persistent.observe(shoot,idle,{dormant},{dormant});
+    auto active5C=dormant;
+    active5C.hitBoxes=true;active5C.limit=2;active5C.collision=1;
+    const auto cast=persistent.observe(idle,idle,{dormant},{active5C});
+    assert(cast.valid()&&cast.action==410);
+    persistent.observe(idle,idle,{active5C},{dormant});
+    const auto mixed=persistent.observeDetailed(idle,jump,{dormant},{dormant});
+    assert(mixed.mixed&&!mixed.origin.valid());
+    assert(mixed.liveProjectiles==1&&mixed.unownedOrigins==0);
+    RecordTracker record;
+    record.observeDamage(2280,cast.action,10,cast.instance);
+    record.observeDamage(3057,mixed.origin.action,20,mixed.origin.instance,mixed.mixed);
+    assert(record.best().actionId==410&&record.best().damage==2280);
+
+    // An unparented object that APPEARS after the owner is already in j6A
+    // must not inherit j6A as the object's casting action. This also covers
+    // delayed 5C's effect spawn after its player has changed animation.
+    HitAttribution late;
+    ProjectileContact firstLate{4002,0,11,0,0,0,false,true};
+    auto uncertain=late.observeDetailed(jump,jump,{}, {firstLate});
+    assert(uncertain.mixed&&!uncertain.origin.valid());
+    assert(uncertain.unownedOrigins==1);
+    auto lateHit=firstLate;
+    lateHit.collision=1;lateHit.limit=1;lateHit.hitBoxes=true;
+    uncertain=late.observeDetailed(jump,jump,{firstLate},{lateHit});
+    assert(uncertain.mixed&&!uncertain.origin.valid());
+
+    // Unknown parent pointer also must not be replaced with the currently
+    // executing normal (before this patch it was assigned to j6A).
+    HitAttribution unresolvedParent;
+    ProjectileContact child{4003,0xdeadbeef,12,0,0,0,false,true};
+    const auto ambiguous=unresolvedParent.observeDetailed(jump,jump,{}, {child});
+    assert(ambiguous.mixed&&!ambiguous.origin.valid());
+    assert(ambiguous.unownedOrigins==1);
+
+    // With no competing delayed projectile, standalone j6A is still tracked.
+    HitAttribution normal;
+    const auto justNormal=normal.observeDetailed(idle,jump,{},{});
+    assert(justNormal.origin.valid()&&justNormal.origin.action==307&&!justNormal.mixed);
+}
+
+static void testMixedDamageNeverBecomesBestRecord() {
+    using namespace whm;
+    // Regression from DamageTrace.log: an unresolvable 5C+j6A frame is a
+    // combo total, not a move. It must be kept as observed damage but NEVER
+    // ranked, and NEVER rendered as "UNKNOWN MOVE" in the BEST HIT card.
+    RecordTracker fallback;
+    fallback.observeDamage(777,-1,1,0,true);
+    assert(fallback.best().damage==0&&!fallback.best().attributed);
+    assert(fallback.best().actionId==-1);
+    assert(fallback.unattributedDamage()==777);
+    fallback.observeDamage(3057,-1,2,0,true);
+    assert(fallback.best().damage==0);
+    assert(fallback.unattributedDamage()==3834);
+    // Once a genuinely identified single cast exists, mixed damage cannot
+    // falsely replace it even if the mixture is numerically larger.
+    fallback.observeDamage(800,307,3,1);
+    assert(fallback.best().damage==800&&fallback.best().actionId==307);
+    fallback.observeDamage(3057,-1,4,0,true);
+    assert(fallback.best().damage==800&&fallback.best().actionId==307);
+    fallback.reset();
+    assert(fallback.best().damage==0);
+    // The invariant holds for arbitrary interleavings of mixed and clean hits.
+    RecordTracker fuzz;
+    for(int i=1;i<=200;++i) {
+        const bool mixed=(i%3==0);
+        fuzz.observeDamage(100+i,mixed?-1:(i%2?410:307),static_cast<unsigned>(i),
+                           mixed?0:(i%2?1:2),mixed);
+        assert(fuzz.best().attributed||fuzz.best().damage==0);
+    }
+
+    ActorContact shot, idle, body;
+    shot.action=410;shot.animationFrame=12;
+    body.action=307;body.hitBoxes=true;body.limit=2;body.collision=1;
+    ProjectileContact p{1901,0,1,0,0,0,false,true};
+    HitAttribution pending;
+    // Merely creating a dormant bullet is NOT a damage event.
+    const auto spawn=pending.observeDetailed(shot,shot,{}, {p});
+    assert(!spawn.origin.valid());
+    pending.observe(shot,idle,{p},{p});
+    // Some explosions do not expose a changed collision flag when sampled
+    // around a whole engine update. An old, unique 5C is still attributable
+    // if it is the only remaining attack and real HP decreased.
+    RecordTracker delayed;
+    for(int i=0;i<3;++i) {
+        const auto unique=pending.observeDetailed(idle,idle,{p},{p});
+        assert(unique.origin.valid()&&unique.origin.action==410&&!unique.mixed);
+        delayed.observeDamage(i==0?600:i==1?680:1000,
+            unique.origin.action,10+i,unique.origin.instance);
+    }
+    assert(delayed.best().damage==2280&&delayed.best().actionId==410);
+    // 5C is still present when the body attack connects. The combined HP
+    // decrease is not a trustworthy j6A-only number, but it MUST be retained
+    // as observed (unassigned) damage rather than discarded.
+    const auto ambiguous=pending.observeDetailed(idle,body,{p},{p});
+    assert(ambiguous.mixed);
+    delayed.observeDamage(777,ambiguous.origin.action,15,ambiguous.origin.instance,
+                          ambiguous.mixed);
+    assert(delayed.best().actionId==410&&delayed.best().damage==2280);
+    assert(delayed.unattributedDamage()==777);
 }
 
 static void testSpellFollowupAttribution() {
@@ -376,12 +500,636 @@ static void testPanelLayouts() {
     assert(!pending.request(target,original,2200)); // bounded, no resize loop
 }
 
+// The 2026-11-15 run recorded AFTER the BEST HIT invariant fix reproduced
+// the user's complaint exactly: frames 101/102/103/119 were the FIRST hits
+// of a fresh session, all source=-1:0 mixed=1, and best stayed -1:0 (the
+// panel showed NO HIT RECORDED). Root cause was HitAttribution::born()
+// treating the tail of the SAME 5C bullet stream as orphan projectiles as
+// soon as the actor cancelled into j6A (307). Those bullets are one cast,
+// not a second independent damage source.
+static void testSuika5CStreamAfterJ6AKeepsItsCast() {
+    using namespace whm;
+    ActorContact shoot;shoot.action=410;shoot.animationFrame=12;
+    ActorContact jump;jump.action=307;jump.animationFrame=5;
+    ActorContact idle;
+    HitAttribution source;
+    ProjectileContact head{9001,0,101,0,1,0,false,true};
+    const auto cast=source.observeDetailed(shoot,shoot,{},{head});
+    // A dormant spawn is not yet a damage event, but it MUST be owned.
+    assert(cast.unownedOrigins==0&&cast.liveProjectiles==1);
+
+    // 5C keeps emitting unparented bullets for ~25 frames while the owner is
+    // already in j6A. They must inherit the SAME 5C cast, never become
+    // orphans (which used to force mixed=1 and blank the BEST HIT).
+    std::vector<ProjectileContact> live{head};
+    for(int i=0;i<6;++i) {
+        ProjectileContact tail{static_cast<std::uintptr_t>(9100+i),0,
+                               static_cast<unsigned>(200+i),0,1,0,false,true};
+        std::vector<ProjectileContact> post=live;
+        post.push_back(tail);
+        const auto seen=source.observeDetailed(jump,jump,live,post);
+        assert(seen.unownedOrigins==0);
+        live.push_back(tail);
+    }
+    // Delayed 5C explosion: no actor box, no collision flag transition on
+    // the sampled frame, but the stream is the only credible source.
+    std::vector<ProjectileContact> exploding;
+    for(const auto &p:live){auto q=p;q.hitBoxes=true;q.limit=1;exploding.push_back(q);}
+    const auto landed=source.observeDetailed(idle,idle,live,exploding);
+    assert(landed.origin.valid()&&landed.origin.action==410&&!landed.mixed);
+
+    RecordTracker record;
+    record.observeDamage(2280,landed.origin.action,655,landed.origin.instance,
+                         landed.mixed);
+    assert(record.best().attributed&&record.best().actionId==410);
+    assert(record.best().damage==2280);
+
+    // j6A adds 777 on top (combo 18:2280>19:3057). A DIFFERENT origin has
+    // an active attack box this frame, so the frame stays mixed and 777 must
+    // NOT inflate 5C back to the bogus 3057 single-move record.
+    ActorContact body=jump;body.hitBoxes=true;body.collision=1;body.limit=2;
+    const auto overlap=source.observeDetailed(idle,body,exploding,exploding);
+    assert(overlap.mixed&&!overlap.origin.valid());
+    record.observeDamage(777,overlap.origin.action,662,
+                         overlap.origin.instance,overlap.mixed);
+    assert(record.best().damage==2280&&record.best().actionId==410);
+    assert(record.unattributedDamage()==777);
+}
+
+// Replay of the real overlap-first session (DamageTrace.log lines 982..1253)
+// with the FIXED attribution. The user's exact repro must never leave the
+// BEST HIT card blank, and 3057 must never be ranked as one 5C.
+static void testOverlapFirstSessionNeverBlank() {
+    using namespace whm;
+    struct Event { unsigned frame; int damage; int action; std::uint64_t instance; bool mixed; };
+    const Event events[] = {
+        {101,1244,410,1,false},  // combo 0:0>9:1244, now credited to 5C
+        {102,684,-1,0,true},
+        {103,835,-1,0,true},
+        {119,69,-1,0,true},
+        {424,2280,410,3,false}, // clean 5C 0:0>18:2280
+        {525,1200,307,4,false}, // clean j6A
+        {655,2280,410,5,false}, // overlap 5C head, now credited to 5C
+        {662,777,-1,0,true},    // j6A add-on, must stay mixed
+    };
+    RecordTracker record;
+    int unattributed=0;
+    for(const auto &e:events) {
+        record.observeDamage(e.damage,e.action,e.frame,e.instance,e.mixed);
+        assert(record.best().attributed&&record.best().actionId==410);
+        assert(record.best().damage>=1244); // never NO HIT RECORDED
+        if(e.mixed)unattributed+=e.damage;
+        assert(record.unattributedDamage()==unattributed);
+    }
+    assert(record.best().damage==2280);
+}
+
+// Replay of the two real Suika practice rounds captured in DamageTrace.log.
+// Every frame that actually dealt damage is here, in order, with the
+// attribution result produced by the diagnostics build. It guards the
+// RecordTracker invariant that unresolvable frames never become a record.
+static void testSuikaDamageTraceReplay() {
+    using namespace whm;
+    struct Event { unsigned frame; int damage; int action; std::uint64_t instance; bool mixed; };
+    // 410 = 5C, 307 = j6A. Overlap frames had source=-1:0 mixed=1 with
+    // unresolved=20..32, i.e. deliberately unresolvable 5C+j6A combos.
+    const Event round1[] = {
+        {282,2280,410,1,false},
+        {420,1200,307,2,false},
+        {732,2280,-1,0,true},
+        {735,777,-1,0,true},
+    };
+    const Event round2[] = {
+        {125,2280,410,1,false},
+        {271,1200,307,2,false},
+        {517,1956,-1,0,true},
+        {518,206,-1,0,true},
+        {520,795,-1,0,true},
+        {543,65,-1,0,true},
+    };
+    RecordTracker record;
+    auto replay=[&](const Event *events,int count) {
+        int unattributed=0;
+        for(int i=0;i<count;++i) {
+            const auto &e=events[i];
+            record.observeDamage(e.damage,e.action,e.frame,e.instance,e.mixed);
+            const auto &best=record.best();
+            // Never an unattributed "UNKNOWN MOVE", not even transiently.
+            assert(best.attributed&&best.damage==2280&&best.actionId==410);
+            assert(!best.isSpell);
+            if(e.mixed)unattributed+=e.damage;
+            assert(record.unattributedDamage()==unattributed);
+        }
+    };
+    replay(round1,4);
+    // DamageTrace.log shows best=-1:0 at frames 74..124: entering the next
+    // round re-creates the BattleManager and resets the tracker.
+    record.reset();
+    replay(round2,6);
+
+    // The exact user repro: a fresh practice session whose FIRST hits are
+    // the 5C+j6A overlap. There is no clean single cast to fall back on,
+    // so no record may be fabricated.
+    RecordTracker overlapFirst;
+    overlapFirst.observeDamage(1956,-1,517,0,true);
+    overlapFirst.observeDamage(206,-1,518,0,true);
+    overlapFirst.observeDamage(795,-1,520,0,true);
+    overlapFirst.observeDamage(65,-1,543,0,true);
+    assert(overlapFirst.best().damage==0&&!overlapFirst.best().attributed);
+    assert(overlapFirst.unattributedDamage()==3022);
+    // A clean 5C later in the same session restores a correct BEST HIT.
+    overlapFirst.observeDamage(2280,410,600,1,false);
+    assert(overlapFirst.best().damage==2280&&overlapFirst.best().actionId==410);
+}
+
+// Root fix for the WHOLE class of "a real hit leaves the panel blank":
+// the game's own combo counter proves damage happened even when no cast can
+// be identified. Its value is authoritative, so the panel can show a real
+// number instead of NO HIT RECORDED, without inventing a move name.
+static void testNoBlankBestHitAfterAnyObservedDamage() {
+    using namespace whm;
+    // Validation run 2026-11-15, frames 983..1023: six consecutive hits of
+    // a 500-series skill, every one source=-1:0 mixed=1. A player landing
+    // ONLY these used to see an empty BEST HIT card.
+    RecordTracker allMixed;
+    const int combo[]={400,626,1288,1391,1486,1573};
+    const int delta[]={400,226,662,103,95,87};
+    for(int i=0;i<6;++i) {
+        allMixed.observeDamage(delta[i],-1,983+i*5,0,true);
+        allMixed.observeCombo(combo[i]);
+    }
+    assert(allMixed.best().damage==0&&!allMixed.best().attributed);
+    assert(allMixed.hasObservedDamage());
+    assert(allMixed.comboPeak()==1573);
+    assert(allMixed.unattributedDamage()==1573);
+    // A later verified single cast takes over. The combo peak never becomes
+    // a move record and never inflates one.
+    allMixed.observeDamage(2280,410,1100,7,false);
+    allMixed.observeCombo(2280);
+    assert(allMixed.best().damage==2280&&allMixed.best().actionId==410);
+    assert(allMixed.comboPeak()==2280);
+
+    // Combo counter unavailable: frame-local HP deltas alone must still
+    // prove that damage happened.
+    RecordTracker hpOnly;
+    hpOnly.observeDamage(1956,-1,517,0,true);
+    hpOnly.observeDamage(206,-1,518,0,true);
+    assert(hpOnly.comboPeak()==0&&hpOnly.hasObservedDamage());
+    assert(hpOnly.unattributedDamage()==2162);
+
+    // Only a genuinely untouched tracker may show NO HIT RECORDED.
+    RecordTracker untouched;
+    assert(!untouched.hasObservedDamage());
+    untouched.observeCombo(0);
+    untouched.observeDamage(0,-1,2,0,true);
+    assert(!untouched.hasObservedDamage());
+    allMixed.reset();
+    assert(!allMixed.hasObservedDamage()&&allMixed.comboPeak()==0);
+    assert(allMixed.best().damage==0);
+}
+
+
+// Reverse-solve real DamageTrace.log combo totals with Cleista per-hit data.
+// The record number is the CUMULATIVE combo damage, not a frame delta.
+static void testDamageInferenceSuikaComboReplay() {
+    using namespace whm;
+    std::istringstream src(R"HPROF(# character|action|card|kind|notation|neutralTotal|perHitBase|hitCount|prorationPermille
+9|300|-1|normal|5A|500|500|1|980
+9|301|-1|normal|f.5A|1000|1000|1|980
+9|301|-1|normal|f.5[A]|1250|1250|1|980
+9|302|-1|normal|6A|1000|1000|1|980
+9|302|-1|normal|6[A]|1150|1150|1|980
+9|303|-1|normal|2A|550|550|1|980
+9|304|-1|normal|3A|900|900|1|980
+9|304|-1|normal|3[A]|1100|1100|1|980
+9|305|-1|normal|66A|1071|450|2|980
+9|306|-1|normal|j.5A|600|600|1|980
+9|307|-1|normal|j.6A|1200|1200|1|980
+9|308|-1|normal|j.2A|400|400|1|980
+9|309|-1|normal|j.8A|817|250|4|980
+9|320|-1|normal|5AA|600|600|1|980
+9|321|-1|normal|5AAA|850|850|1|980
+9|322|-1|normal|5AAAA|1200|1200|1|980
+9|330|-1|normal|4A|500|500|1|980
+9|400|-1|normal|5B|400|400|1|980
+9|400|-1|normal|5[B]|1071|400|3|980
+9|401|-1|normal|6B|832|100|2|980
+9|402|-1|normal|2B|1000|1000|1|980
+9|402|-1|normal|2[B]|1100|1100|1|980
+9|404|-1|normal|j.5B|400|400|1|980
+9|404|-1|normal|j.5[B]|1071|400|3|980
+9|405|-1|normal|j.6B|832|100|2|980
+9|406|-1|normal|j.2B|832|100|2|980
+9|408|-1|normal|66B|1191|500|3|980
+9|410|-1|normal|5C|2280|150|18|980
+9|411|-1|normal|6C|2202|150|18|980
+9|412|-1|normal|2C|2202|150|18|980
+9|414|-1|normal|j.5C|2217|150|18|980
+9|415|-1|normal|j.6C|2201|150|18|980
+9|418|-1|normal|66C|900|900|1|980
+9|500|100|skill|236B|2058|1200|7|980
+9|500|100|skill|236[B]|1311|1200|3|980
+9|501|100|skill|236C|2459|1000|9|980
+9|501|100|skill|236[C]|1029|1000|2|980
+9|505|104|skill|236B|880|880|1|980
+9|505|104|skill|236[B]|2200|2000|1|980
+9|506|104|skill|236C|880|880|1|980
+9|506|104|skill|236[C]|2200|2000|1|980
+9|507|104|skill|j.236B|880|880|1|980
+9|507|104|skill|j.236[B]|2200|2000|1|980
+9|508|104|skill|j.236C|880|880|1|980
+9|508|104|skill|j.236[C]|2200|2000|1|980
+9|510|108|skill|236B|1485|1485|1|980
+9|511|108|skill|236C|1485|1485|1|980
+9|512|108|skill|j.236B|1485|1485|1|980
+9|513|108|skill|j.236C|1485|1485|1|980
+9|520|101|skill|623B|2187|400|3|980
+9|521|101|skill|623C|2187|400|3|980
+9|522|101|skill|j.623B|2179|600|3|980
+9|523|101|skill|j.623C|2179|600|3|980
+9|525|105|skill|623B|1719|550|7|980
+9|526|105|skill|623C|2035|550|9|980
+9|530|109|skill|623B|880|880|1|980
+9|531|109|skill|623C|880|880|1|980
+9|540|102|skill|214B|1024|200|6|980
+9|541|102|skill|214C|1032|200|6|980
+9|542|102|skill|j.214B|220|220|1|980
+9|543|102|skill|j.214C|616|220|3|980
+9|550|110|skill|214B|1119|440|3|980
+9|551|110|skill|214C|1615|440|5|980
+9|565|107|skill|22B|1625|132|15|980
+9|565|107|skill|22[B]|732|120|6|980
+9|566|107|skill|22C|1639|132|15|980
+9|566|107|skill|22[C]|393|120|3|980
+9|570|111|skill|22B|1633|816|2|980
+9|571|111|skill|22C|1633|816|2|980
+9|600|200|spell|sc200|2000|2000|1|980
+9|602|202|spell|sc202|3000|3000|1|980
+9|603|203|spell|sc203|5000|2500|2|980
+9|605|205|spell|sc205|1500|1500|5|980
+9|606|206|spell|sc206|1029|300|5|980
+9|607|207|spell|sc207|4371|2000|5|980
+9|608|208|spell|sc208|6515|1628|4|980
+9|612|212|spell|sc212|3263|1200|3|980
+9|650|200|spell|sc200|2000|2000|1|980
+)HPROF");
+    DamageInference catalog;
+    std::vector<std::string> errors;
+    assert(catalog.read(src,&errors));
+    assert(errors.empty());
+    assert(catalog.size()==78);
+    auto state=[&](int hits,std::vector<int> evidence,int actor) {
+        InferenceState s;
+        s.character=9;
+        s.defenderHP=10000;
+        s.comboHits=hits;
+        s.comboRate=1.0;
+        s.attack=1.;s.defense=1.;
+        s.skillMultiplier=1.;s.spellMultiplier=1.;
+        s.weather=0;s.typeIncludesWeather=true;
+        s.actorAction=actor;
+        s.originActions=std::move(evidence);
+        return s;
+    };
+    // Clean 5C: 18 bullets of 150, measured 2280 total.
+    const auto clean=catalog.solve(2280,state(18,{410},-1));
+    assert(clean.valid&&clean.primaryAction==410&&clean.primaryDamage==2280);
+    assert(clean.confidence>0.9&&clean.parts.size()==1);
+    // The exact regression: 5C 2280 + j6A 777 = 3057, 19 hits.
+    // It must NEVER be ranked as one 3057 j6A, nor left blank.
+    const auto overlap=catalog.solve(3057,state(19,{410,307},307));
+    assert(overlap.valid);
+    assert(overlap.primaryAction==410);
+    assert(overlap.primaryDamage==2280);
+    assert(overlap.primaryDamage<3057);
+    assert(overlap.parts.size()==2);
+    bool hasJ6A=false;
+    for(const auto &p:overlap.parts)
+        if(p.action==307&&p.damage>=740&&p.damage<=810)hasJ6A=true;
+    assert(hasJ6A);
+    // Plain body hit is the easiest explanation.
+    const auto body=catalog.solve(1200,state(1,{307},307));
+    assert(body.valid&&body.primaryAction==307&&body.primaryDamage==1200);
+    // Another character move: 6C is 150 x4 -> 578.
+    const auto sixC=catalog.solve(578,state(4,{411},-1));
+    assert(sixC.valid&&sixC.primaryAction==411&&sixC.primaryDamage==578);
+    // Cleista measured j.5C landing only 8 of its 18 bullets (1107), but
+    // the Steam Deck log shows a real 18-bullet j.5C at 2280. BOTH must be
+    // explainable: treating the measured sample as a move ceiling made the
+    // 2280 record get rejected as "impossible j.5C".
+    const auto partialJ5C=catalog.solve(1107,state(8,{414},-1));
+    assert(partialJ5C.valid&&partialJ5C.primaryAction==414&&
+           partialJ5C.primaryDamage==1107);
+    const auto fullJ5C=catalog.solve(2280,state(18,{414},-1));
+    assert(fullJ5C.valid&&fullJ5C.primaryAction==414);
+    assert(fullJ5C.primaryDamage>=2150&&fullJ5C.primaryDamage<=2300);
+    assert(fullJ5C.confidence>0.9);
+    // Fourth DamageTrace run: FIRST hit of the match was the overlap.
+    // 9 hits/1244, 15/1928, 16/2763, 17/2832 all resolve to the 5C stream.
+    for(const auto &sample:std::vector<std::pair<int,int>>{
+            {1244,9},{1928,15},{2763,16},{2832,17}}) {
+        const auto r=catalog.solve(sample.first,
+            state(sample.second,{410,307},307));
+        assert(r.valid);
+        assert(r.primaryAction==410);
+        // A simulated single-cast share may be slightly above the measured
+        // total; what matters is a small residual and a real 5C cast.
+        assert(r.residual<=static_cast<int>(sample.first*0.06)+30);
+        assert(r.confidence>0.6);
+    }
+    // No forced guesses. 9000 can be approximated by sc208 x4 + 5C x15
+    // (8006), but sc208 never appeared in this combo: an unmatched pair with
+    // a large residual must be rejected, not shown as "sc208 (EST.)".
+    const auto impossible=catalog.solve(9000,state(18,{410},-1));
+    assert(!impossible.valid);
+    DamageInference empty;
+    assert(!empty.solve(2280,state(18,{410},-1)).valid); // missing data table
+    // Simulated explanations NEVER pollute the verified BEST HIT invariant.
+    RecordTracker tracker;
+    tracker.observeInferred(410,-1,2280,0.9);
+    assert(tracker.best().damage==0&&!tracker.best().attributed);
+    assert(tracker.inferred().valid&&tracker.inferred().actionId==410);
+    assert(tracker.inferred().damage==2280);
+    tracker.observeInferred(307,-1,1200,0.9); // weaker must not overwrite
+    assert(tracker.inferred().damage==2280);
+    tracker.observeDamage(500,400,1,1,false); // a real verified cast wins
+    assert(tracker.best().attributed&&tracker.best().damage==500);
+    tracker.reset();
+    assert(!tracker.inferred().valid);
+    // Call-site upper bound: a cast inside a combo can never exceed the
+    // combo's own total, so a combo at/below the record cannot beat it.
+    assert(whm::inferenceCanBeatRecord(1244,0));      // no verified record yet
+    assert(whm::inferenceCanBeatRecord(3057,2280));
+    assert(!whm::inferenceCanBeatRecord(1244,2280));
+    assert(!whm::inferenceCanBeatRecord(2280,2280));  // equal cannot raise it
+    // Sanity ceilings use the FULL projectile stream, not Cleista's single
+    // measured run. j.5C spawns 18 bullets just like 5C (density "C1x18").
+    assert(catalog.maxNeutralDamage(9,414)==2217);   // j.5C full stream
+    assert(catalog.maxNeutralDamage(9,410)==2280);   // 5C = 150 x 18
+    assert(catalog.maxNeutralDamage(9,607)==4371);   // spell sc207
+    assert(catalog.maxNeutralDamage(9,9999)==0);
+    assert(catalog.maxNeutralDamage(-1,410)==0);
+}
+
+// DamageTrace.log 2026-11-15 12:20, frames 19484/19639: a spell's 2000+1500
+// was credited to j.5C (414) and became "j.5C 3500" because casts_[instance]
+// had no upper bound at all. The ceiling must use the FULL 18-bullet stream
+// (2217), NOT Cleista's one measured 8-bullet run (1107), or a legitimate
+// 2280 j.5C would be wrongly retracted.
+static void testRecordCeilingRejectsImpossibleCast() {
+    using namespace whm;
+    const int j5c=(2217*3)/2;   // 3325, same 1.5x rule as ModMain
+    const int fiveC=(2280*3)/2; // 3420
+    RecordTracker t;
+    t.observeDamage(500,300,10,1,false,750);        // clean 5A
+    assert(t.best().attributed&&t.best().actionId==300&&t.best().damage==500);
+    t.observeDamage(2000,414,20,28,false,j5c);
+    t.observeDamage(1500,414,30,28,false,j5c);
+    assert(t.best().actionId==300&&t.best().damage==500); // no j.5C 3500
+    assert(t.castDamage(28)==0);
+    t.observeDamage(300,414,40,28,false,j5c);        // stays rejected
+    assert(t.best().damage==500);
+    assert(t.unattributedDamage()==3800);
+    // If a bad cast had already written a record, rejecting it retracts it.
+    RecordTracker retract;
+    retract.observeDamage(2000,414,10,55,false,j5c);
+    assert(retract.best().actionId==414&&retract.best().damage==2000);
+    retract.observeDamage(1500,414,20,55,false,j5c); // 3500 > 3325
+    assert(!retract.best().attributed);
+    // The user's REAL 18-bullet j.5C (2280) must rank, not be rejected.
+    RecordTracker realJ5C;
+    realJ5C.observeDamage(1244,414,10,88,false,j5c);
+    realJ5C.observeDamage(684,414,11,88,false,j5c);
+    realJ5C.observeDamage(352,414,12,88,false,j5c);
+    assert(realJ5C.best().attributed&&realJ5C.best().actionId==414);
+    assert(realJ5C.best().damage==2280);
+    // A legitimate 18-hit 5C stream must still rank normally.
+    RecordTracker stream;
+    stream.observeDamage(1244,410,10,7,false,fiveC);
+    stream.observeDamage(684,410,11,7,false,fiveC);
+    stream.observeDamage(352,410,12,7,false,fiveC);
+    assert(stream.best().attributed&&stream.best().actionId==410);
+    assert(stream.best().damage==2280);
+    // Legacy callers without a ceiling keep the old behaviour.
+    RecordTracker legacy;
+    legacy.observeDamage(2300,571,220,100);
+    assert(legacy.best().attributed&&legacy.best().damage==2300);
+}
+
+// Cleista lists charged variants as separate moves with a bracketed notation
+// ("236[B]"). Steam Deck DamageTrace.log 13:18 has action=505 seq=2 dealing
+// 880 (tap) at frame 648 and 2200 (charged) at frame 956: identical action
+// and sequence, NO charge flag. Damage is the only way to tell them apart.
+static void testChargedVariantLabels() {
+    using namespace whm;
+    assert(isChargedNotation("236[B]"));
+    assert(isChargedNotation("j.236[C]"));
+    assert(!isChargedNotation("236B"));
+    assert(std::string(chargedSuffix(HudLanguage::Chinese))=="（蓄力）");
+    assert(std::string(chargedSuffix(HudLanguage::Japanese))=="（溜め）");
+    assert(std::string(chargedSuffix(HudLanguage::English))==" (CHARGE)");
+    // Two equally strong charged buttons merge; the bracket must survive.
+    assert(mergeSkillButtons("236[B]","236[C]")=="236[B/C]");
+    assert(mergeSkillButtons("j.236[B]","j.236[C]")=="j.236[B/C]");
+    assert(mergeSkillButtons("236[B]","236[B]")=="236[B]");
+    assert(mergeSkillButtons("236B","236C")=="236B/C"); // tap unchanged
+    assert(cardDisplayName("元鬼玉","236[B]")=="元鬼玉 · 236[B]");
+    assert(cardDisplayName("元鬼玉","236B")=="元鬼玉 · 236B");
+    // Tap 880 / charged 2200 share action 505. Select by measured damage.
+    std::vector<NotationCandidate> oni={{"236B",880},{"236[B]",2200}};
+    assert(pickNotationByDamage(oni,2200)=="236[B]");
+    assert(pickNotationByDamage(oni,880)=="236B");
+    assert(pickNotationByDamage(oni,0)=="236B"); // no measurement -> legacy tap
+    assert(pickNotationByDamage({},2200).empty());
+    // An unrelated measured value still picks the closest real variant.
+    assert(pickNotationByDamage(oni,1900)=="236[B]");
+}
+
+// Marisa's delayed 4-card SC (DamageTrace.log 15:09, frame 13506):
+//   dealt=4000 combo=1:4000 source=-1:0 mixed=1 hits=0 live=22 unresolved=22
+//   infer=614:4000 conf=90 explain=[single sc214 x2] best=500:1350
+// The caster is already idle (action=5) and every projectile is an orphan, so
+// HitAttribution can never produce an owner; the verified record stayed 1350
+// and the 4000 estimate was never allowed onto the BEST HIT card.
+static void testEstimatesNeverBecomeActualRecord() {
+    using namespace whm;
+    const ActualRecord verified{1350,500,true,false,false};
+    const InferredRecord delayed{true,614,214,4000,0.90};
+    // The old failure: numerical similarity must NOT override a measured cast.
+    assert(pickRecordSource(verified,delayed,4000,true)==RecordSource::Verified);
+    // ...but best_ itself stays VERIFIED. Record pruning and future real hits
+    // must keep using measured data, never a simulation.
+    RecordTracker tracker;
+    tracker.observeDamage(1350,500,1000,1);
+    tracker.finish();
+    tracker.observeCombo(4000);
+    tracker.observeInferred(614,214,4000,0.90);
+    assert(tracker.best().attributed&&tracker.best().damage==1350);
+    assert(pickRecordSource(tracker.best(),tracker.inferred(),
+                            tracker.comboPeak(),tracker.hasObservedDamage())
+           ==RecordSource::Verified);
+    // 5C/j.6A overlap must NOT regress: a tying or weaker estimate loses.
+    const ActualRecord cast5C{2280,410,true,false,false};
+    const InferredRecord tie{true,410,-1,2280,0.85};
+    const InferredRecord weaker{true,307,-1,775,0.90};
+    assert(pickRecordSource(cast5C,tie,3057,true)==RecordSource::Verified);
+    assert(pickRecordSource(cast5C,weaker,3057,true)==RecordSource::Verified);
+    // A weak guess must not replace a verified record.
+    const InferredRecord weakGuess{true,614,214,4000,0.50};
+    assert(pickRecordSource(verified,weakGuess,4000,true)==RecordSource::Verified);
+    // A simulated number above ANY observed damage is a fitting artefact.
+    const InferredRecord overshoot{true,614,214,5000,0.99};
+    assert(pickRecordSource(verified,overshoot,4000,true)==RecordSource::Verified);
+    // No verified cast: even a high-confidence estimate remains unassigned.
+    assert(pickRecordSource(ActualRecord{},delayed,4000,true)==RecordSource::Unattributed);
+    // Missing identity is explicitly unassigned, never a fabricated move name.
+    assert(pickRecordSource(ActualRecord{},InferredRecord{},4000,true)==RecordSource::Unattributed);
+    assert(pickRecordSource(verified,InferredRecord{},4000,true)==RecordSource::Verified);
+    // Untouched tracker: NO HIT RECORDED remains correct.
+    assert(pickRecordSource(ActualRecord{},InferredRecord{},0,false)==RecordSource::Empty);
+    // A larger but implausible guess cannot displace the 4000@0.90 estimate.
+    tracker.observeInferred(625,-1,5000,0.40);
+    assert(tracker.inferred().damage==4000&&tracker.inferred().confidence==0.90);
+    tracker.observeInferred(614,214,4500,0.88);
+    assert(tracker.inferred().damage==4500);
+    // Card captions: reserve " · COMMAND" first, ellipsize ONLY the name.
+    auto measure=[](const std::wstring &s){return static_cast<int>(s.size()*10);};
+    const auto fit=layoutCardTitle(L"Witch Ley Line · 214B",400,measure);
+    assert(!fit.split); // fits: unchanged rendering
+    const auto cut=layoutCardTitle(L"Meteonic Debris · 236[B/C]",200,measure);
+    assert(cut.split&&!cut.tailEllipsis);
+    assert(cut.head==L"Meteonic Debris");
+    assert(cut.tail==L" · 236[B/C]");
+    assert(cut.headWidth>0&&cut.headWidth<200);
+    const auto tiny=layoutCardTitle(L"Meteonic Debris · 236[B/C]",60,measure);
+    assert(tiny.split&&tiny.tailEllipsis); // degenerate: still protect suffix
+    const auto noCmd=layoutCardTitle(L"Very Long Spell Name Without Command",60,measure);
+    assert(!noCmd.split);
+}
+
+static void testNativePerHitAttribution() {
+    using namespace whm;
+    NativeActors actors;
+    const auto first=actors.set(0,400);
+    const auto second=actors.set(0,400);
+    assert(first.id!=second.id); // repeated identical moves are separate casts
+    actors.reset();
+    const auto third=actors.set(0,400);
+    assert(third.id>second.id); // a round never recycles cast IDs
+    const auto spell=actors.set(0,614);
+    assert(actors.set(0,664).id==spell.id);
+    assert(actors.set(0,614).id!=spell.id);
+    const auto skill=actors.set(0,505);
+    assert(actors.set(0,505,2).id==skill.id);
+    assert(!actors.set(0,0).valid());
+
+    constexpr std::uintptr_t own=100,other=200;
+    auto birth=[&](std::uintptr_t object,unsigned gen,std::uintptr_t creator,unsigned creatorGen,
+                   std::uint64_t cast,int action) {
+        NativeEvent e;e.kind=NativeEvent::Birth;e.object=object;e.generation=gen;
+        e.owner=e.ally=own;e.creator=creator;e.creatorGeneration=creatorGen;
+        e.cast=cast;e.castAction=action;return e;
+    };
+    auto hit=[&](std::uintptr_t object,unsigned gen,int damage,std::uintptr_t victim=200) {
+        NativeEvent e;e.object=object;e.generation=gen;e.owner=e.ally=own;
+        e.damage=damage;e.victim=victim;return e;
+    };
+    NativeAttribution sources;RecordTracker tracker;
+    auto feed=[&](std::vector<NativeEvent> events,unsigned frame=1,bool lost=false) {
+        auto hits=sources.consume(events,own,lost);
+        for(const auto &h:hits)tracker.observeDamage(h.damage,h.action,frame,h.instance,false,0,h.self);
+        return hits;
+    };
+    // Child returns before root; neither retains a persistent parent pointer.
+    auto events=std::vector<NativeEvent>{birth(301,1,300,1,0,-1),birth(300,1,own,0,10,400),
+        hit(301,1,300),hit(301,1,277),hit(301,1,255)};
+    auto b=feed(events);
+    assert(b.size()==3&&b[0].instance==b[2].instance);
+    assert(tracker.best().actionId==400&&tracker.best().damage==832);
+    // JA in the SAME engine update is credited separately, not to B.
+    auto ja=hit(own,0,319);ja.boxAction=307;ja.castAction=307;ja.cast=11;
+    feed({ja});
+    assert(tracker.best().damage==832);
+    // Long-delayed scripted self hit: keep its casting spell after idle.
+    feed({birth(500,1,own,0,12,614)});
+    auto bomb=hit(500,1,5333,own);bomb.ownerAction=0;bomb.path=1;
+    feed({bomb},900);
+    assert(tracker.best().actionId==614&&tracker.best().damage==5333&&tracker.best().selfDamage);
+    // The SAME cast hitting the opponent is a different victim bucket.
+    feed({hit(500,1,4000)},901);
+    assert(tracker.best().damage==5333);
+    // Address reuse, missing chain, owner/credit mismatch and buffer loss
+    // never inherit a conveniently similar old move.
+    assert(feed({hit(301,2,100)},902)[0].action==-1);
+    feed({birth(700,1,701,1,0,-1),birth(701,1,700,1,0,-1)});
+    assert(feed({hit(700,1,100)},903)[0].action==-1); // cycle
+    auto reflected=hit(500,1,100);reflected.owner=other;
+    assert(feed({reflected},904)[0].action==-1);
+    assert(feed({hit(500,1,100)},905,true)[0].action==-1);
+    // A cached collider from the previous body action is not the new move.
+    ja.boxAction=300;
+    assert(feed({ja},906)[0].action==-1);
+    // Runtime boosts are not rejected by an arbitrary neutral-table cap.
+    feed({birth(800,1,own,0,13,505),hit(800,1,9000)},907);
+    assert(tracker.best().actionId==505&&tracker.best().damage==9000);
+    sources.reset();
+    assert(feed({hit(800,1,500)},1)[0].action==-1);
+}
+
+// Real 0.5.9 failure: five HIT events were present but Meiling's factory
+// wasn't hooked, so every projectile lacked its BIRTH. Capture must precede
+// attribution; the game's 1797 combo total is not used as a substitute.
+static void testMeilingFangPoFiveProjectilesOneCast() {
+    using namespace whm;
+    NativeAttribution sources;RecordTracker record;
+    record.observeDamage(800,302,1,900);
+    const int damage[]={500,366,336,310,285};
+    const unsigned generation[]={90570942,90636487,90702028,90767550,90833095};
+    for(unsigned i=0;i<5;++i) {
+        NativeEvent birth;birth.kind=NativeEvent::Birth;
+        birth.object=300+i%3;birth.generation=generation[i];
+        birth.owner=birth.ally=birth.creator=100;
+        birth.cast=223;birth.castAction=561;birth.action=825;
+        NativeEvent hit=birth;hit.kind=NativeEvent::Hit;hit.victim=200;hit.damage=damage[i];
+        const std::array<NativeEvent,2> events={birth,hit};
+        for(const auto &h:sources.consume(events,100))
+            record.observeDamage(h.damage,h.action,10+i,h.instance);
+    }
+    assert(record.best().actionId==561&&record.best().damage==1797);
+    assert(record.unattributedDamage()==0);
+}
+
+static void testArchivedRoundRecordCannotBeRevokedByReusedCastID() {
+    whm::RecordTracker r;
+    r.observeDamage(1000,400,100,1,false,2000);
+    r.observeDamage(100,300,1,1,false,200);
+    r.observeDamage(101,300,2,1,false,200);
+    assert(r.best().damage==1000&&r.best().actionId==400);
+    r.observeDamage(1200,410,3,2,false,1300);
+    assert(r.best().damage==1200);
+    r.observeDamage(200,410,4,2,false,1300);
+    assert(r.best().damage==1000&&r.best().actionId==400);
+}
+
 int main() {
+    testMeilingFangPoFiveProjectilesOneCast();
+    testNativePerHitAttribution();
+    testArchivedRoundRecordCannotBeRevokedByReusedCastID();
     testPanelLayouts();
     testHudRoundingModes();
     testProjectileRecords();
     testSuikaDelayed5CWithJ6A();
+    testDelayedBirthAndDormantProjectileSafety();
+    testMixedDamageNeverBecomesBestRecord();
+    testSuikaDamageTraceReplay();
+    testSuika5CStreamAfterJ6AKeepsItsCast();
+    testOverlapFirstSessionNeverBlank();
+    testNoBlankBestHitAfterAnyObservedDamage();
     testSpellFollowupAttribution();
+    testDamageInferenceSuikaComboReplay();
+    testRecordCeilingRejectsImpossibleCast();
+    testChargedVariantLabels();
+    testEstimatesNeverBecomeActualRecord();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
     assert(mergeSkillButtons("623B","j.623C")=="623B");
