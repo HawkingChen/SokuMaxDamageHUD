@@ -43,18 +43,32 @@ void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint
     auto &record=casts_[instance];
     if(record.rejected){unattributedDamage_+=damage;return;}
     if(record.damage && record.actionId!=action)return; // invalid source reuse
-    // A cast cannot deal more than its own move's measured full-hit damage.
-    // The caller supplies 1.5x the Cleista neutralTotal as the ceiling, which
-    // still allows weather / attack / counter-hit multipliers. DamageTrace
-    // (2026-11-15 12:20): a spell's 2000+1500 was credited to j.5C (414,
-    // max 1107) and became "j.5C 3500" because casts_[instance] had no bound.
-    // Reject the identity instead of ranking an impossible move, and retract
-    // any record this instance already wrote.
+    // A cast cannot deal more than its own move's FULL projectile stream.
+    // The caller supplies 1.5x the calibrated full-stream damage, which still
+    // allows weather / attack / counter-hit multipliers. DamageTrace
+    // (2026-11-15 12:20): a spell's 2000+1500 was credited to j.5C (414)
+    // and became "j.5C 3500" because casts_[instance] had no bound.
+    // Cleista's summary.damage (1107) was only ONE 8-bullet measurement; the
+    // move actually spawns 18 bullets (density "C1x18") and a real full
+    // j.5C lands 2280, so the ceiling must not use that sample.
     if(damageCeiling>0 && record.damage+damage>damageCeiling) {
+        const int already=record.damage;
         record.rejected=true;
         record.damage=0;
-        if(bestInstance_==instance){best_={};bestInstance_=0;}
-        unattributedDamage_+=damage;
+        record.attributed=false;
+        // Every point this bad identity absorbed was still REAL damage.
+        unattributedDamage_+=already+damage;
+        if(bestInstance_==instance){
+            best_={};bestInstance_=0;
+            // Rebuild from the surviving casts. Simply blanking best_ would
+            // discard an earlier legitimate record (e.g. a clean 500 5A)
+            // and turn the HUD into a blank card after a rejected spell.
+            for(const auto &kv:casts_){
+                const auto &r=kv.second;
+                if(r.rejected||!r.attributed)continue;
+                if(r.damage>best_.damage){best_=r;bestInstance_=kv.first;}
+            }
+        }
         return;
     }
     record.actionId=action;record.attributed=true;record.isSpell=action>=600;

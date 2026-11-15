@@ -2,6 +2,54 @@
 
 本文件适用于测试分支 `agent/gpt6-suika-overlap-diagnostics-20261115` 及其修复分支。只读观测游戏运行状态，不改变战斗伤害或操作。**不自动发布新 Release**。
 
+## 数据源纠错：Cleista `summary.damage` 是「一次测量」，不是招式上限
+
+用户实机用萃香 **j.5C 打出 2280**，而 `soku.cleista.cc/framedata/suika` 写 j.5C = 1107。
+查证后确认：**数据表没错，是我们用错了字段**。
+
+### 证据
+
+- `suika/5c.json`、`suika/j5c.json`、`suika/6c.json` 的 `objectProperties["801"]`
+  与 `objectDescriptors` **字节级完全一致**（hash `d9098a6a…` / `bd99041c…`）：
+  同一发弹幕对象，`perHit = {damage:150, proration:980, limit:2, spiritDamage:25}`。
+  `provenance` 写明 `layoutSource: shady-packer`、`vanillaVerified: true`，
+  「confirmed against vanilla th123a.dat / th123c.dat `{character}.pat`」——**逐 Hit 数据来自原版 `.pat`，准确**。
+- `moves.json` 里 5C / 6C / 2C / j.5C / j.6C 的 `density` **全部是 `C1x18`**（18 发弹幕），
+  但 `summary.damageHits` 是 `18 / 4 / 4 / 8 / 3`，`summary.damage` 是
+  `2280 / 578 / 578 / 1107 / 439`，且 `damageFrom: "measurement"`。
+  即：**测量时只打中了一部分弹幕**。6C 只中 4 发 = 578，j.5C 只中 8 发 = 1107。
+- 用移植公式 `150 × Σ 0.98^i` 验算：8 发 ≈ 1119（实测 1107）、18 发 ≈ 2286（实测 2280）。
+  用户实机的 2280 正是 **18 发全中**，完全自洽。
+- 网页版 JS **不硬编码伤害数值**：`Oh(t)` 返回 `data/character/<char>/<char>.pat`，
+  数值由运行时解析 `.pat`；JS 里实现的是原版移植的 `0x463f50`（Rate / limit / guts /
+  proration）与 `0x47aa50`（hit apply）。页面文案 `prov.asset.pat` 明确写
+  「damage, limit, proration … sourced from parsed `{character}.pat`」。
+  所以**公式与逐 Hit 数据可信**；`prov.asset.hp` 也自承
+  「Not yet checked against a real match」——用户实机 2280 恰好是一次真实对局校验。
+  `.pat` 属游戏原始资源，站点不托管下载，需玩家自己的游戏文件。
+
+### 误用造成的两个实际故障
+
+1. `HitProfiles.tsv` 曾把 `hitCount` 设成「实测命中数」，`solve()` 只遍历 `1..hitCount`，
+   j.5C 最多只能模拟 8 发 → **根本解释不了 2280**。
+2. `maxNeutralDamage(9,414)=1107` 使 `castCeiling = 1660`（1.5×），
+   会把用户真实的 2280 j.5C 判成「不可能」并撤回记录 → 正是 `192b267` 部署后被回滚的原因。
+
+### 修法
+
+- 生成脚本用 `density` 的 `C1xN` 作为 `hitCount`（弹幕总数），并以**与 C++ 完全同构的
+  `simulate()`（含 guts、逐 Hit 截断）** 把测量值外推到满段作为 `neutralTotal`。
+  因为 `calibration = neutralTotal / simulate(full)`，这样 `expectedDamage(measuredHits)`
+  精确复现 Cleista 测量值，同时满段也可达：j.5C 8 发 = 1107、18 发 = 2217（实机 2280 残差 63，
+  容差内、置信 0.97）；6C 4 发仍精确 578、5C 18 发仍精确 2280、3057 重叠仍反解为 5C+j.6A。
+- 修表后 `maxNeutralDamage(9,414)=2217`，`castCeiling=3325`：
+  **放行真实的 2280，仍能拒绝符卡的 3500**。
+- 顺带修 `RecordTracker` 撤回逻辑：拒绝某个 instance 时不再粗暴清空 `best_`，
+  而是把该 instance 累计的全部伤害转入 `unattributedDamage()` 并从存活 casts 重建 best，
+  避免「拒绝误归因符卡 → 连之前合法的 500 记录一起变空白」。
+- `config/FrameData.txt` 仍保留 Cleista 原始测量值（1107）：它只喂 UI 静态招式资料卡，
+  **不参与 BEST HIT 记录或上限**，不要和 `HitProfiles.tsv` 混为一谈。
+
 ## 12:20 实机复验：符卡 3500 被误记为 j.5C（新 bug）
 
 推断版 DLL（`7c08df2b…`）实机日志 719 行 / 1 次启动 / 81 个伤害帧，`profiles=1677` 确认指纹表已加载。用户报告「用 4 卡发动，居然算在 J5C 造成 3500 伤害」。逐帧证据：
@@ -13,12 +61,14 @@ f30503  act=414>414 dealt=150  combo=18:2280>1:150 src=414:80 mixed=0  ← 真�
 ```
 
 - **不是推断器猜错**：`best=` 是 `RecordTracker` 的已验证单招记录。归因器把命中的唯一有身份弹幕（`414:28`）当成整帧来源并给 `mixed=0`，即使场上还有 9 / 42 个无主弹幕 —— `hits.size()==1 && !actorHit` 分支只检查 `possible`，不检查 orphan。
-- **记录层放大**：`RecordTracker::observeDamage()` 按 `instance` 累计 `casts_[instance]`，既无伤害上限也无时间窗，只有新回合才 `clear()`。相隔 155 帧的 `2000 + 1500 = 3500` 因此被算成同一次 j.5C 施法并写进 `best_`。而 Cleista 实测 j.5C（action 414）满段仅 **1107**（150×8），3500 物理上不可能。
+- **记录层放大**：`RecordTracker::observeDamage()` 按 `instance` 累计 `casts_[instance]`，既无伤害上限也无时间窗，只有新回合才 `clear()`。相隔 155 帧的 `2000 + 1500 = 3500` 因此被算成同一次 j.5C 施法并写进 `best_`。
+当时误以为 Cleista 的 **1107** 是 j.5C 满段上限（见上节纠错：那只是 8 发测量样本，
+真实满段 18 发约 2280），但 3500 仍超出任何合理上限，所以拒绝本身是对的。
 - **结构性修复（数据驱动，不动已验证通过的 5C/J6A 归因逻辑）**：
-  - `DamageInference::maxNeutralDamage(character, action)` 返回该招实测满段伤害；调用方按 1.5× 生成 `castCeiling`（覆盖天气 / 攻防 / 反击倍率）。
-  - `RecordTracker::observeDamage` 增加 `damageCeiling`：累计越界即把该 instance 永久标记 `rejected`，本帧及其后续帧只累加到 `unattributedDamage()`；若它已写过 `best_`，用 `bestInstance_` 撤回该记录。
+  - `DamageInference::maxNeutralDamage(character, action)` 返回该招**满弹幕流**伤害（现为 2217）；调用方按 1.5× 生成 `castCeiling`（覆盖天气 / 攻防 / 反击倍率）。
+  - `RecordTracker::observeDamage` 增加 `damageCeiling`：累计越界即把该 instance 永久标记 `rejected`，该 instance 累计的全部伤害转入 `unattributedDamage()`；若它已写过 `best_`，用 `bestInstance_` 撤回并**从存活 casts 重建**，不清空整张卡。
   - `ModMain.cpp` 把「该 instance 即将越界」识别为 `suspectCast`，与 `mixed` 同等对待，触发 combo 反解（evidence 含角色当时的 607），不再信任错误身份。
-  - 回归测试 `testRecordCeilingRejectsImpossibleCast()` 用 2000/1500/1107/2280 回放；本地复刻 49/49 断言通过。
+  - 回归测试 `testRecordCeilingRejectsImpossibleCast()` 用 2000/1500/2217/2280 回放，并新增「真实 2280 j.5C 不得被拒」断言；本地复刻 52/52 断言通过。
 - **诚实边界**：日志没有 born 级事件，尚不能断定符卡弹幕为什么继承 `414:28`（`born()` 的 300–399 继承或 `parentObject` 链皆有可能），所以这次**没有改归因器**，避免破坏 5C/J6A 已通过的修复。修复后不会再出现「j.5C 3500」这种错误招式；由于 BEST HIT 仍是 verified 优先，符卡 3500 会保持为观测到的连段伤害而非升为最痛单招。若要让符卡正确进榜，需加 per-object origin 诊断后定位 born 路径。
 
 ## 从「通用兜底」到「按伤害公式反解招式」（11:10 修正）
@@ -39,12 +89,13 @@ f30503  act=414>414 dealt=150  combo=18:2280>1:150 src=414:80 mixed=0  ← 真�
 - `/practice` 的 JS bundle 显示伤害计算来自原版移植的 `0x463f50`（Rate / limit / guts /
   proration scaler）与 `0x47aa50`（hit apply）。`PLAYER+0x4B0` 是 `comboRate`，
   `+0x4B4` `comboCount`、`+0x4B6` `comboDamage`、`+0x4B8` `comboLimit`。
-- `/framedata-data/manifest.json` 的 `framedata-dag-1` 解出 20 角色 1685 条逐 Hit 指纹，
+- `/framedata-data/manifest.json` 的 `framedata-dag-1` 解出 20 角色 1677 条逐 Hit 指纹，
   落到 `config/HitProfiles.tsv`：`character|action|card|kind|notation|neutralTotal|perHitBase|hitCount|prorationPermille`。
+  `hitCount` 取 `density` 的弹幕总数而非实测命中数（见上节纠错）。
 - 实测校准：萃香 5C 为 `150 × 18`、补正 `980`；网页版 comboRate 逐 Hit 乘 0.98
   （7 Hit 时 `0.8681257 = 0.98^7`）；`gutsFactor = floor(70 + hp*3/1000)/100`。
-  用 `neutralTotal / simulatedFullCast` 逐招校准，使满段在 neutral 状态精确复现实测总伤
-  （5C 2280 / j.6A 1200 / 6C 578 / j.5C 1107）。
+  用 `neutralTotal / simulatedFullCast` 逐招校准，使各招的**测量命中数**在 neutral 状态
+  精确复现实测总伤（5C 2280 / j.6A 1200 / 6C 578 / j.5C 1107），同时允许模拟到满弹幕流。
 
 ### 反解策略（用户给出的剪枝思路）
 

@@ -721,14 +721,14 @@ static void testDamageInferenceSuikaComboReplay() {
 9|406|-1|normal|j.2B|832|100|2|980
 9|408|-1|normal|66B|1191|500|3|980
 9|410|-1|normal|5C|2280|150|18|980
-9|411|-1|normal|6C|578|150|4|980
-9|412|-1|normal|2C|578|150|4|980
-9|414|-1|normal|j.5C|1107|150|8|980
-9|415|-1|normal|j.6C|439|150|3|980
+9|411|-1|normal|6C|2202|150|18|980
+9|412|-1|normal|2C|2202|150|18|980
+9|414|-1|normal|j.5C|2217|150|18|980
+9|415|-1|normal|j.6C|2201|150|18|980
 9|418|-1|normal|66C|900|900|1|980
-9|500|100|skill|236B|1549|1200|5|980
+9|500|100|skill|236B|2058|1200|7|980
 9|500|100|skill|236[B]|1311|1200|3|980
-9|501|100|skill|236C|1499|1000|5|980
+9|501|100|skill|236C|2459|1000|9|980
 9|501|100|skill|236[C]|1029|1000|2|980
 9|505|104|skill|236B|880|880|1|980
 9|505|104|skill|236[B]|2200|2000|1|980
@@ -742,10 +742,10 @@ static void testDamageInferenceSuikaComboReplay() {
 9|511|108|skill|236C|1485|1485|1|980
 9|512|108|skill|j.236B|1485|1485|1|980
 9|513|108|skill|j.236C|1485|1485|1|980
-9|520|101|skill|623B|1483|400|2|980
-9|521|101|skill|623C|1483|400|2|980
-9|522|101|skill|j.623B|1483|600|2|980
-9|523|101|skill|j.623C|1483|600|2|980
+9|520|101|skill|623B|2187|400|3|980
+9|521|101|skill|623C|2187|400|3|980
+9|522|101|skill|j.623B|2179|600|3|980
+9|523|101|skill|j.623C|2179|600|3|980
 9|525|105|skill|623B|1719|550|7|980
 9|526|105|skill|623C|2035|550|9|980
 9|530|109|skill|623B|880|880|1|980
@@ -754,11 +754,11 @@ static void testDamageInferenceSuikaComboReplay() {
 9|541|102|skill|214C|1032|200|6|980
 9|542|102|skill|j.214B|220|220|1|980
 9|543|102|skill|j.214C|616|220|3|980
-9|550|110|skill|214B|759|440|2|980
-9|551|110|skill|214C|1315|440|4|980
-9|565|107|skill|22B|493|132|4|980
+9|550|110|skill|214B|1119|440|3|980
+9|551|110|skill|214C|1615|440|5|980
+9|565|107|skill|22B|1625|132|15|980
 9|565|107|skill|22[B]|732|120|6|980
-9|566|107|skill|22C|378|132|3|980
+9|566|107|skill|22C|1639|132|15|980
 9|566|107|skill|22[C]|393|120|3|980
 9|570|111|skill|22B|1633|816|2|980
 9|571|111|skill|22C|1633|816|2|980
@@ -812,6 +812,17 @@ static void testDamageInferenceSuikaComboReplay() {
     // Another character move: 6C is 150 x4 -> 578.
     const auto sixC=catalog.solve(578,state(4,{411},-1));
     assert(sixC.valid&&sixC.primaryAction==411&&sixC.primaryDamage==578);
+    // Cleista measured j.5C landing only 8 of its 18 bullets (1107), but
+    // the Steam Deck log shows a real 18-bullet j.5C at 2280. BOTH must be
+    // explainable: treating the measured sample as a move ceiling made the
+    // 2280 record get rejected as "impossible j.5C".
+    const auto partialJ5C=catalog.solve(1107,state(8,{414},-1));
+    assert(partialJ5C.valid&&partialJ5C.primaryAction==414&&
+           partialJ5C.primaryDamage==1107);
+    const auto fullJ5C=catalog.solve(2280,state(18,{414},-1));
+    assert(fullJ5C.valid&&fullJ5C.primaryAction==414);
+    assert(fullJ5C.primaryDamage>=2150&&fullJ5C.primaryDamage<=2300);
+    assert(fullJ5C.confidence>0.9);
     // Fourth DamageTrace run: FIRST hit of the match was the overlap.
     // 9 hits/1244, 15/1928, 16/2763, 17/2832 all resolve to the 5C stream.
     for(const auto &sample:std::vector<std::pair<int,int>>{
@@ -850,8 +861,9 @@ static void testDamageInferenceSuikaComboReplay() {
     assert(whm::inferenceCanBeatRecord(3057,2280));
     assert(!whm::inferenceCanBeatRecord(1244,2280));
     assert(!whm::inferenceCanBeatRecord(2280,2280));  // equal cannot raise it
-    // Sanity ceilings used by RecordTracker, straight from Cleista data.
-    assert(catalog.maxNeutralDamage(9,414)==1107);   // j.5C = 150 x 8
+    // Sanity ceilings use the FULL projectile stream, not Cleista's single
+    // measured run. j.5C spawns 18 bullets just like 5C (density "C1x18").
+    assert(catalog.maxNeutralDamage(9,414)==2217);   // j.5C full stream
     assert(catalog.maxNeutralDamage(9,410)==2280);   // 5C = 150 x 18
     assert(catalog.maxNeutralDamage(9,607)==4371);   // spell sc207
     assert(catalog.maxNeutralDamage(9,9999)==0);
@@ -859,11 +871,13 @@ static void testDamageInferenceSuikaComboReplay() {
 }
 
 // DamageTrace.log 2026-11-15 12:20, frames 19484/19639: a spell's 2000+1500
-// was credited to j.5C (414, max 1107) and became "j.5C 3500" because
-// casts_[instance] had no upper bound at all.
+// was credited to j.5C (414) and became "j.5C 3500" because casts_[instance]
+// had no upper bound at all. The ceiling must use the FULL 18-bullet stream
+// (2217), NOT Cleista's one measured 8-bullet run (1107), or a legitimate
+// 2280 j.5C would be wrongly retracted.
 static void testRecordCeilingRejectsImpossibleCast() {
     using namespace whm;
-    const int j5c=(1107*3)/2;   // 1660, same 1.5x rule as ModMain
+    const int j5c=(2217*3)/2;   // 3325, same 1.5x rule as ModMain
     const int fiveC=(2280*3)/2; // 3420
     RecordTracker t;
     t.observeDamage(500,300,10,1,false,750);        // clean 5A
@@ -877,10 +891,17 @@ static void testRecordCeilingRejectsImpossibleCast() {
     assert(t.unattributedDamage()==3800);
     // If a bad cast had already written a record, rejecting it retracts it.
     RecordTracker retract;
-    retract.observeDamage(900,414,10,55,false,j5c);
-    assert(retract.best().actionId==414&&retract.best().damage==900);
-    retract.observeDamage(1000,414,20,55,false,j5c); // 1900 > 1660
+    retract.observeDamage(2000,414,10,55,false,j5c);
+    assert(retract.best().actionId==414&&retract.best().damage==2000);
+    retract.observeDamage(1500,414,20,55,false,j5c); // 3500 > 3325
     assert(!retract.best().attributed);
+    // The user's REAL 18-bullet j.5C (2280) must rank, not be rejected.
+    RecordTracker realJ5C;
+    realJ5C.observeDamage(1244,414,10,88,false,j5c);
+    realJ5C.observeDamage(684,414,11,88,false,j5c);
+    realJ5C.observeDamage(352,414,12,88,false,j5c);
+    assert(realJ5C.best().attributed&&realJ5C.best().actionId==414);
+    assert(realJ5C.best().damage==2280);
     // A legitimate 18-hit 5C stream must still rank normally.
     RecordTracker stream;
     stream.observeDamage(1244,410,10,7,false,fiveC);

@@ -1115,11 +1115,13 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         g_comboOrigins.clear();
         g_comboActorAction=-1;
     }
-    // A cast cannot exceed its own move's measured full-hit damage. 1.5x
+    // A cast cannot exceed its own move's FULL projectile stream. 1.5x
     // leaves room for weather/attack/counter-hit multipliers but rejects the
-    // real-log case where a spell's 2000+1500 was credited to j.5C (max
-    // 1107) and became "j.5C 3500". A suspect identity is treated like an
-    // unresolvable one: reverse-solve the combo instead of trusting it.
+    // real-log case where a spell's 2000+1500 was credited to j.5C and became
+    // "j.5C 3500". The ceiling must NOT use Cleista's 1107 summary value:
+    // that is one 8-bullet measurement of a move that spawns 18 (density
+    // "C1x18"), and a real full j.5C lands 2280. A suspect identity is
+    // treated like an unresolvable one: reverse-solve the combo instead.
     const int srcAction=source.origin.action;
     const int neutral=(srcAction>=300&&srcAction<690)
         ? g_inference.maxNeutralDamage(static_cast<int>(attacker->characterIndex),srcAction)
@@ -1298,7 +1300,7 @@ void loadSettings() {
     }
     std::ifstream in(folder/L"MoveProfiles.txt");
     if (in) g_catalog.read(in);
-    // Per-hit fingerprints from Cleista's framedata (20 characters, 1685
+    // Per-hit fingerprints from Cleista's framedata (20 characters, 1677
     // casts). Used ONLY to explain combo totals that HitAttribution could not
     // attribute; it never writes game state and never replaces verified casts.
     std::ifstream profiles(folder/L"HitProfiles.tsv");

@@ -15,9 +15,10 @@ struct MoveFingerprint {
     int card = -1;
     int kind = 0; // 0 normal, 1 skill, 2 spell
     std::string notation;
-    int neutralTotal = 0;   // measured full-hit damage on a fresh 10k HP dummy
+    int neutralTotal = 0;   // calibrated FULL-STREAM damage on a fresh 10k HP dummy
     int perHitBase = 0;     // damage of ONE hit (e.g. Suika 5C = 150)
-    int hitCount = 1;       // hits in a full cast (e.g. Suika 5C = 18)
+    int hitCount = 1;       // PROJECTILES a cast spawns (Suika 5C/j.5C = 18),
+                            // NOT how many landed in Cleista's one measured run
     int prorationPermille = 980;
     double calibration = 1.0; // computed once: neutralTotal / simulated full cast
 };
@@ -70,8 +71,9 @@ public:
     bool read(std::istream &in, std::vector<std::string> *errors = nullptr);
     std::size_t size() const { return moves_.size(); }
     const std::vector<MoveFingerprint> &forCharacter(int character) const;
-    // Largest measured full-hit damage for an action (all variants included).
-    // Used as a sanity ceiling: a cast cannot deal more than its own data.
+    // Largest calibrated full-stream damage for an action (all variants).
+    // Used as a sanity ceiling. Cleista's summary.damage is a single measured
+    // run, so the table extrapolates it to the move's full projectile stream.
     int maxNeutralDamage(int character, int action) const;
 
     // Simulate k hits of one cast with the ported scaler and the calibrated
