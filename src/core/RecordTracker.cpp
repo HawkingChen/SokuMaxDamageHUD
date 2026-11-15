@@ -1,7 +1,14 @@
 #include "RecordTracker.hpp"
 #include <algorithm>
 namespace whm {
-void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; }
+void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; comboPeak_ = 0; }
+void RecordTracker::observeCombo(int comboDamage) {
+    // comboDamage is the game's cumulative combo damage. It is authoritative
+    // even when HitAttribution cannot identify a cast. Keep the match peak;
+    // a new round resets the counter but not the observed peak, matching the
+    // existing "keep best across rounds" policy.
+    if(comboDamage>comboPeak_)comboPeak_=comboDamage;
+}
 void RecordTracker::commit() {
     // Defensive guard for the legacy HP-only API: an unattributed episode can
     // never become the BEST HIT, even if it carries a larger HP delta.

@@ -639,6 +639,52 @@ static void testSuikaDamageTraceReplay() {
     assert(overlapFirst.best().damage==2280&&overlapFirst.best().actionId==410);
 }
 
+// Root fix for the WHOLE class of "a real hit leaves the panel blank":
+// the game's own combo counter proves damage happened even when no cast can
+// be identified. Its value is authoritative, so the panel can show a real
+// number instead of NO HIT RECORDED, without inventing a move name.
+static void testNoBlankBestHitAfterAnyObservedDamage() {
+    using namespace whm;
+    // Validation run 2026-11-15, frames 983..1023: six consecutive hits of
+    // a 500-series skill, every one source=-1:0 mixed=1. A player landing
+    // ONLY these used to see an empty BEST HIT card.
+    RecordTracker allMixed;
+    const int combo[]={400,626,1288,1391,1486,1573};
+    const int delta[]={400,226,662,103,95,87};
+    for(int i=0;i<6;++i) {
+        allMixed.observeDamage(delta[i],-1,983+i*5,0,true);
+        allMixed.observeCombo(combo[i]);
+    }
+    assert(allMixed.best().damage==0&&!allMixed.best().attributed);
+    assert(allMixed.hasObservedDamage());
+    assert(allMixed.comboPeak()==1573);
+    assert(allMixed.unattributedDamage()==1573);
+    // A later verified single cast takes over. The combo peak never becomes
+    // a move record and never inflates one.
+    allMixed.observeDamage(2280,410,1100,7,false);
+    allMixed.observeCombo(2280);
+    assert(allMixed.best().damage==2280&&allMixed.best().actionId==410);
+    assert(allMixed.comboPeak()==2280);
+
+    // Combo counter unavailable: frame-local HP deltas alone must still
+    // prove that damage happened.
+    RecordTracker hpOnly;
+    hpOnly.observeDamage(1956,-1,517,0,true);
+    hpOnly.observeDamage(206,-1,518,0,true);
+    assert(hpOnly.comboPeak()==0&&hpOnly.hasObservedDamage());
+    assert(hpOnly.unattributedDamage()==2162);
+
+    // Only a genuinely untouched tracker may show NO HIT RECORDED.
+    RecordTracker untouched;
+    assert(!untouched.hasObservedDamage());
+    untouched.observeCombo(0);
+    untouched.observeDamage(0,-1,2,0,true);
+    assert(!untouched.hasObservedDamage());
+    allMixed.reset();
+    assert(!allMixed.hasObservedDamage()&&allMixed.comboPeak()==0);
+    assert(allMixed.best().damage==0);
+}
+
 int main() {
     testPanelLayouts();
     testHudRoundingModes();
@@ -649,6 +695,7 @@ int main() {
     testSuikaDamageTraceReplay();
     testSuika5CStreamAfterJ6AKeepsItsCast();
     testOverlapFirstSessionNeverBlank();
+    testNoBlankBestHitAfterAnyObservedDamage();
     testSpellFollowupAttribution();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");

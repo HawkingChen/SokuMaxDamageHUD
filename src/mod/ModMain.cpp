@@ -555,10 +555,12 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         if(view.hand.size()==5)break;
     }
     const auto &best=g_record.best();
-    // The BEST HIT card only ever shows a verified single cast. There is
-    // deliberately no "UNKNOWN MOVE" branch: an unresolvable 5C+j6A frame
-    // is a combo total, not a move, and must not be presented as the best
-    // hit. With no verified record the panel shows its NO RECORD state.
+    // The BEST HIT card shows a verified single cast when one exists. There
+    // is deliberately no "UNKNOWN MOVE" branch: an unresolvable frame is a
+    // combo total, not a move. But damage that the game itself counted must
+    // NEVER be presented as "NO HIT RECORDED" either. The fallback below
+    // uses the game's own combo peak -- an authoritative number that does
+    // not depend on our attribution guess -- and labels it as a COMBO.
     if(best.attributed&&best.damage>0){
         const int action=best.actionId;
         const int card=whm::cardForAction(view.character,action);
@@ -567,6 +569,14 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                label.notation,label.notation,label.fallback,false);
         rec.names=label.names;
         view.record=rec;
+    } else if(g_record.hasObservedDamage()) {
+        // No single cast could be verified, but damage definitely happened.
+        // Show the observed peak with an honest COMBO label, never a made-up
+        // move name and never a blank card.
+        view.record.damage=g_record.comboPeak()>0?
+            g_record.comboPeak():g_record.unattributedDamage();
+        view.record.approximate=false;
+        view.record.names={"连段伤害","コンボダメージ","COMBO DAMAGE"};
     }
     {std::lock_guard<std::mutex> guard(g_panelMutex);g_panelView=std::move(view);}
     return {{"什么最痛",-1}};
@@ -1044,6 +1054,12 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     // the sole detected contact, and never rank the aggregate as one move.
     g_record.observeDamage(dealt,source.origin.action,mgr->frameCount,
                            source.origin.instance,source.mixed);
+    // Authoritative, attribution-independent evidence that damage happened.
+    // The game's own combo counter is read from the attacker, so it stays
+    // correct even when HitAttribution cannot decide which cast caused a
+    // frame. This is what keeps the BEST HIT card from ever reading
+    // "NO HIT RECORDED" after a real hit.
+    g_record.observeCombo(comboAfter.damage);
     // Opt-in diagnostic log. No network access, no raw memory writes, no
     // instrumentation of the game's own damage routines. Never enable in
     // ordinary builds without the player's explicit INI setting.

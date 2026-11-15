@@ -2,6 +2,22 @@
 
 本文件适用于测试分支 `agent/gpt6-suika-overlap-diagnostics-20261115` 及其修复分支。只读观测游戏运行状态，不改变战斗伤害或操作。**不自动发布新 Release**。
 
+## 彻底消除「打中了却显示没记录」（10:30）
+
+用户问「这就不能彻底解决吗」。先把「彻底」拆清楚：
+
+- **可以根治**：任何真实命中后，面板都不再出现 `NO HIT RECORDED` / `未识别招式`。
+- **无法根治**：每一笔伤害都标出 100% 正确的招式名。游戏（1.10a）不暴露「这一 Hit 由哪一招造成」的事件，MOD 只能从 HP 前后差、combo 计数器、角色动画、弹幕碰撞位**反推**，这是逆问题，天然存在不可判定的帧。要做到 100% 必须 hook 游戏自己的伤害计算函数拿 Hit 事件里的攻击方指针，需要 Windows 实机逆向 SokuLib，当前环境做不到。
+
+**结构性做法：把「是否观测到伤害」与「能否猜出归属」解耦。**
+
+- `comboReading()` 读的是 `own.comboDamage` —— **游戏自己维护的权威连段累计伤害**，不依赖我们的弹幕身份推断。`RecordTracker::observeCombo()` 保存本局峰值 `comboPeak_`。
+- `RecordTracker::hasObservedDamage()` = `best_>0 || unattributedDamage_>0 || comboPeak_>0`，只要造成过伤害就为真。
+- `composeHUD()` 三级呈现：① 有已验证单招 → 显示招式名 + 伤害（**5C 场景零变化**）；② 否则观测到伤害 → 显示 `comboPeak_`（拿不到时用 `unattributedDamage_`）并明确标为「连段伤害 / コンボダメージ / COMBO DAMAGE」，`approximate=false`；③ 真的没打中 → 才显示「尚未记录命中」。
+- 关键：**数值来源换成了游戏自己的计数器**，不是把「未识别招式」换个说法；也不冒充单招，不变量「BEST HIT 只排名已验证单次施法」保持。
+
+验证局里 29 帧 `source=-1:0 mixed=1` 的伤害（涉及 400 / 500 / 302 / 306 / 308 / 307 / 300 / 10）因此不再可能让卡片空白。`tests/test_core.cpp` 新增 `testNoBlankBestHitAfterAnyObservedDamage()`，用验证局 frames 983..1023 的真实数值回放。
+
 ## 第 4 次启动：用户 repro 被完整复现，前一版修复不够（10:08）
 
 用户反馈「5C 和 J6A 重叠 3057 伤害，还是显示尚未命中」。上一版只把「未识别招式」改成空白，**没有让重叠命中产生真实招式记录**，等于没修。新日志（第 3 个 `# New run`，行 935 起）复现：
