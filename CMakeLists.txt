@@ -35,6 +35,8 @@ if(WHM_BUILD_TESTS)
     target_link_libraries(whm_simulator_tests PRIVATE whm_core)
     add_test(NAME whm_simulator_tests COMMAND whm_simulator_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/simulator-attribution.tsv")
+    add_test(NAME whm_simulator_geometry_tests COMMAND whm_simulator_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/simulator-geometry.tsv")
     add_executable(whm_assets_tests tests/test_assets.cpp)
     target_include_directories(whm_assets_tests PRIVATE src/core)
     if(MSVC)

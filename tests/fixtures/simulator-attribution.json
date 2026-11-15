@@ -2,7 +2,7 @@
   "source": "https://soku.cleista.cc/practice",
   "frameDataSource": "https://soku.cleista.cc/framedata",
   "engineSha256": "93f49ebae8f9ebb06f2a08622379cf14d0ccc33cf349e073428a8d89d6770734",
-  "fixtureSha256": "20b03db4486f2b67714799e3572f4a5888c39217cbddec7a03e6ea9acafe0260",
+  "fixtureSha256": "ad7b0b3f345784d6b69f79a1fc47e924318f1798610ee6454fe11ef76c8a9553",
   "scope": "Forced entries, max skill level, two distances, charged button held 60 updates; single-cast boundaries; not native game verification",
   "nativeVerified": false,
   "cases": 3916,
@@ -150,5 +150,7 @@
       "noDamageObserved": 77,
       "casesWithDiagnostics": 10
     }
-  ]
+  ],
+  "syntheticScenarioRows": 17,
+  "syntheticScenarioPolicy": "Enumerated without action events; require command-input scenarios, not native setAction"
 }

@@ -6,6 +6,10 @@ from pathlib import Path
 
 def prune_case(lines):
     rows = [line.split() for line in lines]
+    if rows and rows[0][0] == "C" and int(rows[0][2]) >= 10000:
+        # Synthetic website scenarios need command inputs, not setAction.
+        yield lines[0]
+        return
     births = {row[1]: row for row in rows if row[0] == "B"}
     needed = {row[1] for row in rows if row[0] in ("H", "R")}
     queue = list(needed)

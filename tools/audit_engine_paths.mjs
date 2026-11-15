@@ -9,6 +9,7 @@ import {pathToFileURL} from 'node:url';
 
 const [engineDirectory, patternDirectory, inventoryFile, outputDirectory] = process.argv.slice(2);
 if (!outputDirectory) throw new Error('Expected ENGINE_DIR PATTERN_DIR INVENTORY_JSON OUTPUT_DIR');
+const geometrySweep=process.argv.includes("--geometry");
 const testVariants=process.argv.includes("--variants");
 const engineRoot = path.resolve(engineDirectory), output = path.resolve(outputDirectory);
 fs.mkdirSync(output, {recursive:true});
@@ -131,23 +132,33 @@ for(const character of inventory.characters) {
     const key=testVariants?move.slug:move.action;
     if(!['normal','skill','spell'].includes(move.kind)||seen.has(key))continue;
     seen.add(key);
-    for(const distance of [60,300]) {
+    const scenarios=geometrySweep?[20,120,600].flatMap(distance=>[0,120].flatMap(targetY=>
+      (move.notation?.toLowerCase().startsWith('j')?[60,240]:[0]).map(playerY=>({distance,targetY,playerY})))):
+      [60,300].map(distance=>({distance,targetY:0,playerY:120}));
+    for(const {distance,targetY,playerY} of scenarios) {
       const state=structuredClone(base), player=state.players[0], victim=state.players[1];
       player.positionX=500;victim.positionX=500+distance;
       const air=move.notation?.toLowerCase().startsWith('j');
-      if(air){player.positionY=120;player.airborne=true;}
+      if(air){player.positionY=playerY;player.airborne=true;}
+      if(targetY){victim.positionY=targetY;victim.airborne=true;engine.sa(engine.Eb(state,data),victim,9);}
       engine.nb(player);
       if(move.card>=100&&move.card<200)engine.mb(player,move.card-100,4);
-      player.hand.cards=Array.from({length:5},()=>({id:move.card??200,cost:1}));
+      player.hand.cards=Array.from({length:5},()=>({id:move.card??200,cost:cardTables.byCharacter.get(character.characterId)?.get(move.card)?.cost??1}));
       engine.C(player,engine.da,5);
       const diagnostics=[];
       const options={diagnostics:{report(d){if(diagnostics.length<30)diagnostics.push(d);}}};
-      current={character:character.character,action:move.action,notation:move.notation,distance,air,
+      current={character:character.character,action:move.action,notation:move.notation,distance,targetY,playerY,air,
         forcedAction:true,skillLevel:4,chargeVariantTested:testVariants&&move.notation?.includes("["),nativeVerified:false,writes:[],diagnostics};
       emit(`C ${character.character} ${move.action} ${distance}`);
       const charged=testVariants?/\[([ABC])\]/.exec(move.notation??''):null;
       const heldWord=charged?({A:16,B:32,C:64}[charged[1]]):0;
       try {
+        // Framedata also uses synthetic IDs for input chains/activation demos.
+        // They are scenario identifiers, never native setAction arguments.
+        if(move.action>=10000) {
+          current.status='requires-input-scenario';current.opponentDamage=0;current.selfDamage=0;
+          fs.writeSync(results,JSON.stringify(current)+'\n');current=null;updating.length=0;totals.cases++;continue;
+        }
         if(heldWord)engine.auditInput(player,heldWord,null,data,engine.Eb(state,data,options));
         engine.sa(engine.Eb(state,data,options),player,move.action);
         current.entryAction=player.actionId;
@@ -173,7 +184,7 @@ for(const character of inventory.characters) {
 fs.closeSync(trace);fs.closeSync(results);
 fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify({engineHash:hash,totals,
   limitations:['Forced action entry, not command-input validation',testVariants?'Charged variants: fixed 60-frame button hold, not exhaustive release timing':'Unique action IDs only; charged variants not independently exercised',
-    'One seed, two distances, max skill level, no weather or guard','Character updates and collision steps; not full practice UI or native execution',
+    geometrySweep?'Targeted geometry sweep, max skill level, no weather or guard':'One seed, two distances, max skill level, no weather or guard','Character updates and collision steps; not full practice UI or native execution',
     'Charged scenarios stop when a separate attack starts; follow-ups have their own cases',
     'Rejected forced entries are not exercised moves',
     'Observed HP loss is not an authoritative native damage total','No-damage and diagnostics require review; they are not passes']},null,2));

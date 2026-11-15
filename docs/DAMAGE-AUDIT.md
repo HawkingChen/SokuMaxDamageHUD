@@ -57,6 +57,12 @@ inputs, every release timing, every level, weather, guard, or all opponent
 states. The update loop exercises character scripts and collisions, not the
 complete practice UI and round lifecycle.
 
+Some website rows have synthetic IDs at or above 10,000 for chained inputs
+or activation demonstrations. These are not native game action IDs. The
+adapter enumerates them as requiring an input scenario and does not pass
+them to `setAction`. `--geometry` expands a selected inventory to three
+distances and ground/air target positions for targeted follow-up of misses.
+
 An entry with no observed damage is **not a pass**: it can be movement, a buff,
 a miss, a prerequisite-dependent move, or an unavailable action. Engine
 diagnostics also remain review items. Inventory coverage, simulated execution,
@@ -78,3 +84,10 @@ observed events. The other 1,445 scenarios did not produce damage; they are
 not evidence of supported hit attribution. Twelve scenarios also carry
 ported-engine diagnostics. The sweep does not establish exhaustive native
 coverage.
+
+A second fixture, `simulator-geometry.tsv`, adds 1,506 targeted scenarios
+for 170 rows whose source listed positive damage but whose baseline missed.
+It contributes 968 observed damage events and exercises 110 additional rows.
+Across both sweeps, 1,665 of the 1,958 rows produced damage. The remaining
+293 rows need scenario review; 60 of those have positive source damage.
+They must not be described as verified. Both fixtures are checked in CI.

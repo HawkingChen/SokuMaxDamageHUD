@@ -1,0 +1,14 @@
+{
+  "source": "https://soku.cleista.cc/practice",
+  "engineSha256": "93f49ebae8f9ebb06f2a08622379cf14d0ccc33cf349e073428a8d89d6770734",
+  "fixtureSha256": "20eeddb74709f414fc53e443f7a27576c10dd96e7381b0f3e83e7e998ad18831",
+  "scope": "Targeted follow-up of 170 rows with positive source damage but no baseline hit; distances 20/120/600, target heights 0/120, aerial attacker heights 60/240",
+  "nativeVerified": false,
+  "cases": 1506,
+  "damageObserved": 344,
+  "hits": 968,
+  "newlyObservedRows": 110,
+  "combinedObservedRows": 1665,
+  "remainingRows": 293,
+  "remainingRowsWithPositiveSourceDamage": 60
+}
