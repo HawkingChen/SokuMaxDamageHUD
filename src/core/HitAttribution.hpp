@@ -24,6 +24,10 @@ struct HitAttributionResult {
     unsigned plausibleOrigins = 0;
     unsigned liveProjectiles = 0;
     unsigned unownedOrigins = 0;
+    // Every cast that was plausibly live this frame, even when the frame is
+    // mixed. DamageInference uses these as evidence instead of guessing from
+    // the whole move table.
+    std::vector<AttackOrigin> candidates;
 };
 struct ActorContact {
     int action = 0, sequence = 0;
@@ -210,11 +214,24 @@ public:
         }
         objects_=std::move(next);
         HitAttributionResult decision;
+        // Populate candidate evidence on EVERY exit path, including mixed.
+        auto done=[&]() {
+            auto push=[&](AttackOrigin o) {
+                if(!o.valid())return;
+                for(const auto &old:decision.candidates)if(old==o)return;
+                decision.candidates.push_back(o);
+            };
+            for(const auto &o:hits)push(o);
+            for(const auto &o:possible)push(o);
+            for(const auto &o:latent)push(o);
+            push(beforeOrigin);push(afterOrigin);push(casting);
+            return decision;
+        };
         decision.detectedContacts=static_cast<unsigned>(hits.size());
         decision.plausibleOrigins=static_cast<unsigned>(possible.size());
         decision.liveProjectiles=liveProjectileCount;
         decision.unownedOrigins=unresolvedCount;
-        if(unknownHit || hits.size()>1) {decision.mixed=true;return decision;}
+        if(unknownHit || hits.size()>1) {decision.mixed=true;return done();}
         if(hits.size()==1) {
             const auto hit=hits.front();
             const bool actorHit=(hit==beforeOrigin||hit==afterOrigin);
@@ -227,16 +244,16 @@ public:
                 // 5C stream). Do not credit that whole frame to the bullet's
                 // cast -- that is the 3057-inflation bug, not a single move.
                 for(const auto &candidate:possible)
-                    if(candidate!=hit){decision.mixed=true;return decision;}
+                    if(candidate!=hit){decision.mixed=true;return done();}
                 decision.origin=hit;
-                return decision;
+                return done();
             }
             // A body hit while another live attack belongs to a different
             // cast may be combined (delayed 5C + j6A). Do not give its whole
             // frame damage to the body; do not erase the observed damage
             // either -- RecordTracker keeps an unassigned fallback.
             for(const auto &candidate:latent)
-                if(candidate!=hit){decision.mixed=true;return decision;}
+                if(candidate!=hit){decision.mixed=true;return done();}
             // An orphan bullet is a competing source only if it has an
             // active box/collision. Purely visual newborn FX do not veto
             // a verified normal attack.
@@ -246,22 +263,22 @@ public:
                     const auto &s=obj.sample;
                     if((s.hitBoxes&&s.limit>0)||s.collision==1||
                        s.collision==2||s.collision==7) {
-                        decision.mixed=true;return decision;
+                        decision.mixed=true;return done();
                     }
                 }
             }
-            decision.origin=hit;return decision;
+            decision.origin=hit;return done();
         }
         // Without a detected contact, an active attack box is a useful
         // candidate only if no different projectile is also credible.
         if(possible.size()==1) {
             const auto chosen=possible.front();
             for(const auto &candidate:latent)
-                if(candidate!=chosen){decision.mixed=true;return decision;}
-            if(unresolvedProjectile){decision.mixed=true;return decision;}
-            decision.origin=chosen;return decision;
+                if(candidate!=chosen){decision.mixed=true;return done();}
+            if(unresolvedProjectile){decision.mixed=true;return done();}
+            decision.origin=chosen;return done();
         }
-        if(!possible.empty()){decision.mixed=true;return decision;}
+        if(!possible.empty()){decision.mixed=true;return done();}
         // Delayed 5C or another sustained shot can deal damage without its
         // collision flag changing on the sampled frame. If the same owned
         // cast already existed BEFORE this frame, no body box is active,
@@ -270,22 +287,22 @@ public:
         // damage occurred; a mere projectile spawn counts as zero damage.
         if(!unresolvedProjectile&&latent.size()==1 &&
            !before.hitBoxes&&!after.hitBoxes && !pre.empty()) {
-            decision.origin=latent.front();return decision;
+            decision.origin=latent.front();return done();
         }
         if(unresolvedProjectile||latent.size()>1) {
-            decision.mixed=true;return decision;
+            decision.mixed=true;return done();
         }
         // A scripted ALT_EFFECT attack can legitimately lack an ordinary
         // collision transition; preserve its own cast in that narrow case.
         if(isSpellFollowupAction(after.action) && afterOrigin.valid() &&
            afterOrigin.action==canonicalAttackAction(after.action)) {
-            decision.origin=afterOrigin;return decision;
+            decision.origin=afterOrigin;return done();
         }
         if(isSpellFollowupAction(before.action) && beforeOrigin.valid() &&
            beforeOrigin.action==canonicalAttackAction(before.action)) {
-            decision.origin=beforeOrigin;return decision;
+            decision.origin=beforeOrigin;return done();
         }
-        return decision;
+        return done();
     }
     AttackOrigin observe(const ActorContact &before,const ActorContact &after,
                          const std::vector<ProjectileContact> &pre,
@@ -294,7 +311,7 @@ public:
     }
 };
 
-struct ComboReading { int hits=0,damage=0; bool freshTarget=false; };
+struct ComboReading { int hits=0,damage=0; bool freshTarget=false; double comboRate=1.0; };
 inline int observedDamage(int beforeHP,int afterHP,ComboReading before,ComboReading after) {
     // Prefer the actual HP decrease for this engine update. Combo damage is
     // a *cumulative* value, not a fresh per-action amount; on combo reset or

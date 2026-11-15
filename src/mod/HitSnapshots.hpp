@@ -61,8 +61,15 @@ inline ComboReading comboReading(const SokuLib::v2::Player &own,
                                 const SokuLib::v2::Player &target) {
     const auto bytes=reinterpret_cast<const char*>(&target);
     unsigned short delay{};std::memcpy(&delay,bytes+0x4c0,sizeof(delay));
+    // The browser port of 0x463f50 keeps comboRate at PLAYER+0x4B0 (1200),
+    // immediately before comboCount at +0x4B4. Read-only; fall back to 1.0
+    // when the value is not a sane proration multiplier.
+    const auto ownBytes=reinterpret_cast<const char*>(&own);
+    float rate=1.0f;std::memcpy(&rate,ownBytes+0x4b0,sizeof(rate));
+    if(!(rate>0.0f&&rate<=1.0001f))rate=1.0f;
     return {static_cast<unsigned short>(own.comboCount),
         static_cast<unsigned short>(own.comboDamage),
-        canStartCombo(target.frameState.actionId,delay)};
+        canStartCombo(target.frameState.actionId,delay),
+        static_cast<double>(rate)};
 }
 } // namespace whm

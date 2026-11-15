@@ -1,7 +1,12 @@
 #include "RecordTracker.hpp"
 #include <algorithm>
 namespace whm {
-void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; comboPeak_ = 0; }
+void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; comboPeak_ = 0; inferred_ = {}; }
+void RecordTracker::observeInferred(int action,int card,int damage,double confidence) {
+    if(damage<=0||action<300||action>=690)return;
+    if(damage<inferred_.damage)return; // keep the strongest explanation
+    inferred_={true,action,card,damage,confidence};
+}
 void RecordTracker::observeCombo(int comboDamage) {
     // comboDamage is the game's cumulative combo damage. It is authoritative
     // even when HitAttribution cannot identify a cast. Keep the match peak;

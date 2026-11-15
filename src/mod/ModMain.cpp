@@ -2,6 +2,7 @@
 // No network packets, game damage, RNG or inputs are modified.
 #include <SokuLib.hpp>
 #include "DamageEngine.hpp"
+#include "DamageInference.hpp"
 #include "MoveCatalog.hpp"
 #include "WikiMax.hpp"
 #include "RecordTracker.hpp"
@@ -56,9 +57,17 @@ std::vector<HudRow> g_rows;
 SokuLib::DrawUtils::RectangleShape g_background;
 whm::MoveCatalog g_catalog;
 whm::WikiMaxCatalog g_wikiMax;
+whm::DamageInference g_inference;
 whm::OpeningCounterCatalog g_openingCounters;
 whm::RecordTracker g_record;
 whm::HitAttribution g_hitAttribution;
+// Evidence collected during the CURRENT combo. Combo damage is cumulative,
+// so the solver always explains the whole combo from its starting HP.
+int g_comboStartHP = 10000;
+int g_comboActorAction = -1;
+unsigned g_lastInferFrame = 0;
+std::vector<int> g_comboOrigins;
+whm::InferenceResult g_lastInfer{};
 bool g_allowUnverifiedProbes = false;
 bool g_damageTraceEnabled = false;
 std::ofstream g_damageTraceFile;
@@ -555,12 +564,15 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         if(view.hand.size()==5)break;
     }
     const auto &best=g_record.best();
-    // The BEST HIT card shows a verified single cast when one exists. There
-    // is deliberately no "UNKNOWN MOVE" branch: an unresolvable frame is a
-    // combo total, not a move. But damage that the game itself counted must
-    // NEVER be presented as "NO HIT RECORDED" either. The fallback below
-    // uses the game's own combo peak -- an authoritative number that does
-    // not depend on our attribution guess -- and labels it as a COMBO.
+    const auto &inferred=g_record.inferred();
+    // BEST HIT prefers a VERIFIED single cast. When the whole combo is mixed
+    // or unresolved, DamageInference reverse-solves the game's cumulative
+    // combo damage into the most likely cast; show THAT CAST'S OWN share,
+    // never the whole 3057 combo as if it were one move. The card is marked
+    // approximate/estimated so a simulation is never passed off as measured.
+    const bool inferredUsable=inferred.valid&&inferred.confidence>=0.35&&
+                              inferred.damage>0;
+    // A verified single cast always wins over a simulated explanation.
     if(best.attributed&&best.damage>0){
         const int action=best.actionId;
         const int card=whm::cardForAction(view.character,action);
@@ -569,10 +581,22 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                label.notation,label.notation,label.fallback,false);
         rec.names=label.names;
         view.record=rec;
+    } else if(inferredUsable) {
+        const int action=inferred.actionId;
+        const int card=inferred.card>=0?inferred.card:
+                       whm::cardForAction(view.character,action);
+        const MoveLabel label=labelForAction(*own,action);
+        PanelCard rec=makeCard(view.character,card,inferred.damage,
+                               label.notation,label.notation,label.fallback,true);
+        rec.names=label.names;
+        static const char *const kEstimateTag[3]={
+            "（推定）","（推定）"," (EST.)"};
+        for(int i=0;i<3;++i)
+            if(!rec.names[i].empty())rec.names[i]+=kEstimateTag[i];
+        view.record=rec;
     } else if(g_record.hasObservedDamage()) {
-        // No single cast could be verified, but damage definitely happened.
-        // Show the observed peak with an honest COMBO label, never a made-up
-        // move name and never a blank card.
+        // Last resort only: no verified cast and the simulation failed.
+        // Show the authoritative combo peak with an honest COMBO label.
         view.record.damage=g_record.comboPeak()>0?
             g_record.comboPeak():g_record.unattributedDamage();
         view.record.approximate=false;
@@ -1008,6 +1032,11 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         }
         g_record.reset();
         g_hitAttribution.reset();
+        g_comboStartHP=10000;
+        g_comboActorAction=-1;
+        g_comboOrigins.clear();
+        g_lastInferFrame=0;
+        g_lastInfer={};
         g_displayText.clear();
         g_rows.clear();
         g_lastRefresh = 0;
@@ -1017,7 +1046,14 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         g_probeDataSource = nullptr;
     }
     // Keep the best hit across round transitions; only re-create the HUD.
-    if (mgr->frameCount < g_lastFrame) { g_lastRefresh = 0; g_hitAttribution.reset(); }
+    if (mgr->frameCount < g_lastFrame) {
+        g_lastRefresh = 0;
+        g_hitAttribution.reset();
+        g_comboOrigins.clear();
+        g_comboActorAction=-1;
+        g_lastInferFrame=0;
+        g_lastInfer={};
+    }
     g_lastFrame = mgr->frameCount;
     // Spectator/replay and unsupported sessions MUST NOT read or show either
     // player as "self". Run the original engine update without any HUD work.
@@ -1050,6 +1086,63 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const auto source=g_hitAttribution.observeDetailed(
         actorBefore,actorAfter,objectsBefore,objectsAfter);
     const int dealt=whm::observedDamage(before,after,comboBefore,comboAfter);
+    // ---- Combo-level source reconstruction --------------------------------
+    // The record number is the game's CUMULATIVE combo damage, not a frame
+    // delta and not a single cast. Collect the casts that were actually live
+    // during this combo, then reverse-solve the total with the ported damage
+    // formula + Cleista per-hit fingerprints.
+    const bool comboStarted=comboBefore.hits==0&&comboAfter.hits>0;
+    if(comboStarted) {
+        g_comboStartHP=before>0?before:10000;
+        g_comboOrigins.clear();
+        g_comboActorAction=-1;
+        g_lastInferFrame=0;
+        g_lastInfer={};
+    }
+    auto addOrigin=[&](int action) {
+        if(action<300||action>=690)return;
+        for(int old:g_comboOrigins)if(old==action)return;
+        g_comboOrigins.push_back(action);
+    };
+    if(dealt>0) {
+        for(const auto &c:source.candidates)addOrigin(c.action);
+        addOrigin(actorBefore.action);
+        addOrigin(actorAfter.action);
+        if(actorAfter.action>=300&&actorAfter.action<690)
+            g_comboActorAction=actorAfter.action;
+    }
+    if(comboAfter.hits==0) {
+        g_comboOrigins.clear();
+        g_comboActorAction=-1;
+    }
+    if(dealt>0 && (source.mixed||!source.origin.valid()) &&
+       comboAfter.damage>0 && g_inference.size()>0 &&
+       (comboStarted||mgr->frameCount-g_lastInferFrame>=6)) {
+        g_lastInferFrame=mgr->frameCount;
+        const auto &ownCounters=side==0?mgr->leftCharacterManager:mgr->rightCharacterManager;
+        // Runtime fields are multipliers near 1.0. A missing/zero/NaN value
+        // would make every simulated cast zero damage and silently disable
+        // inference, so fall back to neutral instead of trusting it blindly.
+        auto saneMul=[](double v){return (v>0.2&&v<=3.0)?v:1.0;};
+        whm::InferenceState st;
+        st.character=static_cast<int>(attacker->characterIndex);
+        st.defenderHP=g_comboStartHP;
+        st.comboHits=comboAfter.hits;
+        st.comboRate=1.0; // explain the WHOLE combo from its own start
+        st.attack=saneMul(attacker->attackPower);
+        st.defense=saneMul(target->defensePower);
+        st.skillMultiplier=saneMul(attacker->specialDmgMultiplier);
+        st.spellMultiplier=saneMul(attacker->spellDmgMultiplier);
+        st.weather=static_cast<int>(ownCounters.effectiveWeather);
+        st.typeIncludesWeather=true; // runtime multipliers already include weather
+        st.actorAction=g_comboActorAction;
+        st.originActions=g_comboOrigins;
+        g_lastInfer=g_inference.solve(comboAfter.damage,st);
+        if(g_lastInfer.valid&&g_lastInfer.confidence>=0.35&&
+           g_lastInfer.primaryAction>=300&&g_lastInfer.primaryDamage>0)
+            g_record.observeInferred(g_lastInfer.primaryAction,g_lastInfer.primaryCard,
+                                     g_lastInfer.primaryDamage,g_lastInfer.confidence);
+    }
     // NEVER attribute the whole 5C + j6A (or other mixed-source) frame to
     // the sole detected contact, and never rank the aggregate as one move.
     g_record.observeDamage(dealt,source.origin.action,mgr->frameCount,
@@ -1097,7 +1190,12 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         };
         show("pre",objectsBefore);
         show("post",objectsAfter);
-        out<<" best="<<g_record.best().actionId<<":"<<g_record.best().damage<<"\n";
+        out<<" crate="<<comboAfter.comboRate
+           <<" profiles="<<g_inference.size()
+           <<" infer="<<g_lastInfer.primaryAction<<":"<<g_lastInfer.primaryDamage
+           <<" conf="<<static_cast<int>(g_lastInfer.confidence*100)
+           <<" explain=["<<g_lastInfer.reason<<"]"
+           <<" best="<<g_record.best().actionId<<":"<<g_record.best().damage<<"\n";
         out.flush();
     }
     if (mgr->frameCount - g_lastRefresh >= 12 || g_lastRefresh == 0) {
@@ -1183,6 +1281,11 @@ void loadSettings() {
     }
     std::ifstream in(folder/L"MoveProfiles.txt");
     if (in) g_catalog.read(in);
+    // Per-hit fingerprints from Cleista's framedata (20 characters, 1685
+    // casts). Used ONLY to explain combo totals that HitAttribution could not
+    // attribute; it never writes game state and never replaces verified casts.
+    std::ifstream profiles(folder/L"HitProfiles.tsv");
+    if (profiles) g_inference.read(profiles);
     std::ifstream wiki(folder/L"WikiMaxProfiles.txt");
     if (wiki) g_wikiMax.read(wiki);
     std::ifstream opening(folder/L"OpeningCounter.txt");

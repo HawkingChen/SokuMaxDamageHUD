@@ -13,6 +13,7 @@ endif()
 
 add_library(whm_core STATIC
     src/core/DamageEngine.cpp
+    src/core/DamageInference.cpp
     src/core/MoveCatalog.cpp
     src/core/RecordTracker.cpp
     src/core/WikiMax.cpp
@@ -89,7 +90,7 @@ if(WIN32)
         "${whm_template_SOURCE_DIR}/lib/d3dx9.lib")
     set_target_properties(SokuMaxDamageHUD PROPERTIES PREFIX "")
     install(TARGETS SokuMaxDamageHUD LIBRARY DESTINATION . RUNTIME DESTINATION .)
-    install(FILES config/MoveProfiles.txt config/WikiMaxProfiles.txt config/FrameData.txt config/MoveNames.tsv config/OpeningCounter.txt DESTINATION .)
+    install(FILES config/MoveProfiles.txt config/WikiMaxProfiles.txt config/FrameData.txt config/MoveNames.tsv config/OpeningCounter.txt config/HitProfiles.tsv DESTINATION .)
     install(FILES config/SokuMaxDamageHUD.ini DESTINATION .)
     configure_file(config/mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/mod.json" DESTINATION .)

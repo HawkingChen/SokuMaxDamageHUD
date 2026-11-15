@@ -20,6 +20,8 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
+#include <utility>
+#include "DamageInference.hpp"
 
 static void testProjectileRecords() {
     using namespace whm;
@@ -685,6 +687,164 @@ static void testNoBlankBestHitAfterAnyObservedDamage() {
     assert(allMixed.best().damage==0);
 }
 
+
+// Reverse-solve real DamageTrace.log combo totals with Cleista per-hit data.
+// The record number is the CUMULATIVE combo damage, not a frame delta.
+static void testDamageInferenceSuikaComboReplay() {
+    using namespace whm;
+    std::istringstream src(R"HPROF(# character|action|card|kind|notation|neutralTotal|perHitBase|hitCount|prorationPermille
+9|300|-1|normal|5A|500|500|1|980
+9|301|-1|normal|f.5A|1000|1000|1|980
+9|301|-1|normal|f.5[A]|1250|1250|1|980
+9|302|-1|normal|6A|1000|1000|1|980
+9|302|-1|normal|6[A]|1150|1150|1|980
+9|303|-1|normal|2A|550|550|1|980
+9|304|-1|normal|3A|900|900|1|980
+9|304|-1|normal|3[A]|1100|1100|1|980
+9|305|-1|normal|66A|1071|450|2|980
+9|306|-1|normal|j.5A|600|600|1|980
+9|307|-1|normal|j.6A|1200|1200|1|980
+9|308|-1|normal|j.2A|400|400|1|980
+9|309|-1|normal|j.8A|817|250|4|980
+9|320|-1|normal|5AA|600|600|1|980
+9|321|-1|normal|5AAA|850|850|1|980
+9|322|-1|normal|5AAAA|1200|1200|1|980
+9|330|-1|normal|4A|500|500|1|980
+9|400|-1|normal|5B|400|400|1|980
+9|400|-1|normal|5[B]|1071|400|3|980
+9|401|-1|normal|6B|832|100|2|980
+9|402|-1|normal|2B|1000|1000|1|980
+9|402|-1|normal|2[B]|1100|1100|1|980
+9|404|-1|normal|j.5B|400|400|1|980
+9|404|-1|normal|j.5[B]|1071|400|3|980
+9|405|-1|normal|j.6B|832|100|2|980
+9|406|-1|normal|j.2B|832|100|2|980
+9|408|-1|normal|66B|1191|500|3|980
+9|410|-1|normal|5C|2280|150|18|980
+9|411|-1|normal|6C|578|150|4|980
+9|412|-1|normal|2C|578|150|4|980
+9|414|-1|normal|j.5C|1107|150|8|980
+9|415|-1|normal|j.6C|439|150|3|980
+9|418|-1|normal|66C|900|900|1|980
+9|500|100|skill|236B|1549|1200|5|980
+9|500|100|skill|236[B]|1311|1200|3|980
+9|501|100|skill|236C|1499|1000|5|980
+9|501|100|skill|236[C]|1029|1000|2|980
+9|505|104|skill|236B|880|880|1|980
+9|505|104|skill|236[B]|2200|2000|1|980
+9|506|104|skill|236C|880|880|1|980
+9|506|104|skill|236[C]|2200|2000|1|980
+9|507|104|skill|j.236B|880|880|1|980
+9|507|104|skill|j.236[B]|2200|2000|1|980
+9|508|104|skill|j.236C|880|880|1|980
+9|508|104|skill|j.236[C]|2200|2000|1|980
+9|510|108|skill|236B|1485|1485|1|980
+9|511|108|skill|236C|1485|1485|1|980
+9|512|108|skill|j.236B|1485|1485|1|980
+9|513|108|skill|j.236C|1485|1485|1|980
+9|520|101|skill|623B|1483|400|2|980
+9|521|101|skill|623C|1483|400|2|980
+9|522|101|skill|j.623B|1483|600|2|980
+9|523|101|skill|j.623C|1483|600|2|980
+9|525|105|skill|623B|1719|550|7|980
+9|526|105|skill|623C|2035|550|9|980
+9|530|109|skill|623B|880|880|1|980
+9|531|109|skill|623C|880|880|1|980
+9|540|102|skill|214B|1024|200|6|980
+9|541|102|skill|214C|1032|200|6|980
+9|542|102|skill|j.214B|220|220|1|980
+9|543|102|skill|j.214C|616|220|3|980
+9|550|110|skill|214B|759|440|2|980
+9|551|110|skill|214C|1315|440|4|980
+9|565|107|skill|22B|493|132|4|980
+9|565|107|skill|22[B]|732|120|6|980
+9|566|107|skill|22C|378|132|3|980
+9|566|107|skill|22[C]|393|120|3|980
+9|570|111|skill|22B|1633|816|2|980
+9|571|111|skill|22C|1633|816|2|980
+9|600|200|spell|sc200|2000|2000|1|980
+9|602|202|spell|sc202|3000|3000|1|980
+9|603|203|spell|sc203|5000|2500|2|980
+9|605|205|spell|sc205|1500|1500|5|980
+9|606|206|spell|sc206|1029|300|5|980
+9|607|207|spell|sc207|4371|2000|5|980
+9|608|208|spell|sc208|6515|1628|4|980
+9|612|212|spell|sc212|3263|1200|3|980
+9|650|200|spell|sc200|2000|2000|1|980
+)HPROF");
+    DamageInference catalog;
+    std::vector<std::string> errors;
+    assert(catalog.read(src,&errors));
+    assert(errors.empty());
+    assert(catalog.size()==78);
+    auto state=[&](int hits,std::vector<int> evidence,int actor) {
+        InferenceState s;
+        s.character=9;
+        s.defenderHP=10000;
+        s.comboHits=hits;
+        s.comboRate=1.0;
+        s.attack=1.;s.defense=1.;
+        s.skillMultiplier=1.;s.spellMultiplier=1.;
+        s.weather=0;s.typeIncludesWeather=true;
+        s.actorAction=actor;
+        s.originActions=std::move(evidence);
+        return s;
+    };
+    // Clean 5C: 18 bullets of 150, measured 2280 total.
+    const auto clean=catalog.solve(2280,state(18,{410},-1));
+    assert(clean.valid&&clean.primaryAction==410&&clean.primaryDamage==2280);
+    assert(clean.confidence>0.9&&clean.parts.size()==1);
+    // The exact regression: 5C 2280 + j6A 777 = 3057, 19 hits.
+    // It must NEVER be ranked as one 3057 j6A, nor left blank.
+    const auto overlap=catalog.solve(3057,state(19,{410,307},307));
+    assert(overlap.valid);
+    assert(overlap.primaryAction==410);
+    assert(overlap.primaryDamage==2280);
+    assert(overlap.primaryDamage<3057);
+    assert(overlap.parts.size()==2);
+    bool hasJ6A=false;
+    for(const auto &p:overlap.parts)
+        if(p.action==307&&p.damage>=740&&p.damage<=810)hasJ6A=true;
+    assert(hasJ6A);
+    // Plain body hit is the easiest explanation.
+    const auto body=catalog.solve(1200,state(1,{307},307));
+    assert(body.valid&&body.primaryAction==307&&body.primaryDamage==1200);
+    // Another character move: 6C is 150 x4 -> 578.
+    const auto sixC=catalog.solve(578,state(4,{411},-1));
+    assert(sixC.valid&&sixC.primaryAction==411&&sixC.primaryDamage==578);
+    // Fourth DamageTrace run: FIRST hit of the match was the overlap.
+    // 9 hits/1244, 15/1928, 16/2763, 17/2832 all resolve to the 5C stream.
+    for(const auto &sample:std::vector<std::pair<int,int>>{
+            {1244,9},{1928,15},{2763,16},{2832,17}}) {
+        const auto r=catalog.solve(sample.first,
+            state(sample.second,{410,307},307));
+        assert(r.valid);
+        assert(r.primaryAction==410);
+        // A simulated single-cast share may be slightly above the measured
+        // total; what matters is a small residual and a real 5C cast.
+        assert(r.residual<=static_cast<int>(sample.first*0.06)+30);
+        assert(r.confidence>0.6);
+    }
+    // Upper-bound pruning: a cast whose maximum damage is below the combo
+    // total cannot be offered as a confident single-cast explanation.
+    const auto impossible=catalog.solve(9000,state(18,{410},-1));
+    assert(!impossible.valid); // never display a forced guess as a move
+    DamageInference empty;
+    assert(!empty.solve(2280,state(18,{410},-1)).valid); // missing data table
+    // Simulated explanations NEVER pollute the verified BEST HIT invariant.
+    RecordTracker tracker;
+    tracker.observeInferred(410,-1,2280,0.9);
+    assert(tracker.best().damage==0&&!tracker.best().attributed);
+    assert(tracker.inferred().valid&&tracker.inferred().actionId==410);
+    assert(tracker.inferred().damage==2280);
+    tracker.observeInferred(307,-1,1200,0.9); // weaker must not overwrite
+    assert(tracker.inferred().damage==2280);
+    tracker.observeDamage(500,400,1,1,false); // a real verified cast wins
+    assert(tracker.best().attributed&&tracker.best().damage==500);
+    tracker.reset();
+    assert(!tracker.inferred().valid);
+}
+
 int main() {
     testPanelLayouts();
     testHudRoundingModes();
@@ -697,6 +857,7 @@ int main() {
     testOverlapFirstSessionNeverBlank();
     testNoBlankBestHitAfterAnyObservedDamage();
     testSpellFollowupAttribution();
+    testDamageInferenceSuikaComboReplay();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
     assert(mergeSkillButtons("623B","j.623C")=="623B");

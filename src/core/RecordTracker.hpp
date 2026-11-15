@@ -11,6 +11,17 @@ struct ActualRecord {
     bool isSpell = false;
 };
 
+// A move reconstructed by simulating the ported damage formula against the
+// game's own combo total. It is NOT a verified single-cast record: the HUD
+// must mark it approximate and show only THIS cast's share of the combo.
+struct InferredRecord {
+    bool valid = false;
+    int actionId = -1;
+    int card = -1;
+    int damage = 0;
+    double confidence = 0.0;
+};
+
 // Single-cast damage records. The runtime supplies observed damage and a
 // source instance from HitAttribution, so delayed/multi-hit projectiles keep
 // their casting action. observe() retains the older HP-only API for callers
@@ -28,6 +39,10 @@ public:
     // every engine update so the panel can prove that damage really happened
     // even when every frame of a sequence is unresolvable.
     void observeCombo(int comboDamage);
+    // Keep the strongest simulated explanation of a mixed/unresolved combo.
+    // Never writes into best_, so the verified-record invariant still holds.
+    void observeInferred(int action, int card, int damage, double confidence);
+    const InferredRecord &inferred() const { return inferred_; }
     void finish();
     // INVARIANT: the BEST HIT card is a ranking of verified single casts only.
     // Unresolvable/mixed damage is observed into unattributedDamage() but is
@@ -53,5 +68,6 @@ private:
     unsigned lastHitFrame_ = 0;
     int unattributedDamage_ = 0;
     int comboPeak_ = 0;
+    InferredRecord inferred_{};
 };
 }

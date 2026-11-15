@@ -2,21 +2,71 @@
 
 本文件适用于测试分支 `agent/gpt6-suika-overlap-diagnostics-20261115` 及其修复分支。只读观测游戏运行状态，不改变战斗伤害或操作。**不自动发布新 Release**。
 
-## 彻底消除「打中了却显示没记录」（10:30）
+## 从「通用兜底」到「按伤害公式反解招式」（11:10 修正）
 
-用户问「这就不能彻底解决吗」。先把「彻底」拆清楚：
+> 10:30 版曾写下「**无法根治**：每一笔伤害都标出 100% 正确的招式名」，并据此只做
+> `COMBO DAMAGE` 通用标签兜底。**这个结论是错的**。用户已提供网页版非想天则
+> `https://soku.cleista.cc/practice` 与 Cleista framedata：伤害计算管线与逐 Hit 数据都可读，
+> 就应该算出来，而不是贴一个通用标签。以下为修正后的做法。
 
-- **可以根治**：任何真实命中后，面板都不再出现 `NO HIT RECORDED` / `未识别招式`。
-- **无法根治**：每一笔伤害都标出 100% 正确的招式名。游戏（1.10a）不暴露「这一 Hit 由哪一招造成」的事件，MOD 只能从 HP 前后差、combo 计数器、角色动画、弹幕碰撞位**反推**，这是逆问题，天然存在不可判定的帧。要做到 100% 必须 hook 游戏自己的伤害计算函数拿 Hit 事件里的攻击方指针，需要 Windows 实机逆向 SokuLib，当前环境做不到。
+**可以做到**：把游戏自己的连段累计伤害（combo 计数器）当硬约束，按网页版移植的伤害公式
+逐 Hit 模拟候选招式，反解出最可能的施法组合及各自贡献；用 `comboHits` 做第二重约束；
+残差过大时明确放弃，绝不硬凑招式名。
+**仍然做不到**：在不 Hook 游戏 Hit 事件的前提下把每次伤害都 100% 证明为某一招。因此推定
+结果必须带「（推定）/ (EST.)」标记，且永远不能覆盖已验证的单招记录。
 
-**结构性做法：把「是否观测到伤害」与「能否猜出归属」解耦。**
+### 数据来源与公式校准
 
-- `comboReading()` 读的是 `own.comboDamage` —— **游戏自己维护的权威连段累计伤害**，不依赖我们的弹幕身份推断。`RecordTracker::observeCombo()` 保存本局峰值 `comboPeak_`。
-- `RecordTracker::hasObservedDamage()` = `best_>0 || unattributedDamage_>0 || comboPeak_>0`，只要造成过伤害就为真。
-- `composeHUD()` 三级呈现：① 有已验证单招 → 显示招式名 + 伤害（**5C 场景零变化**）；② 否则观测到伤害 → 显示 `comboPeak_`（拿不到时用 `unattributedDamage_`）并明确标为「连段伤害 / コンボダメージ / COMBO DAMAGE」，`approximate=false`；③ 真的没打中 → 才显示「尚未记录命中」。
-- 关键：**数值来源换成了游戏自己的计数器**，不是把「未识别招式」换个说法；也不冒充单招，不变量「BEST HIT 只排名已验证单次施法」保持。
+- `/practice` 的 JS bundle 显示伤害计算来自原版移植的 `0x463f50`（Rate / limit / guts /
+  proration scaler）与 `0x47aa50`（hit apply）。`PLAYER+0x4B0` 是 `comboRate`，
+  `+0x4B4` `comboCount`、`+0x4B6` `comboDamage`、`+0x4B8` `comboLimit`。
+- `/framedata-data/manifest.json` 的 `framedata-dag-1` 解出 20 角色 1685 条逐 Hit 指纹，
+  落到 `config/HitProfiles.tsv`：`character|action|card|kind|notation|neutralTotal|perHitBase|hitCount|prorationPermille`。
+- 实测校准：萃香 5C 为 `150 × 18`、补正 `980`；网页版 comboRate 逐 Hit 乘 0.98
+  （7 Hit 时 `0.8681257 = 0.98^7`）；`gutsFactor = floor(70 + hp*3/1000)/100`。
+  用 `neutralTotal / simulatedFullCast` 逐招校准，使满段在 neutral 状态精确复现实测总伤
+  （5C 2280 / j.6A 1200 / 6C 578 / j.5C 1107）。
 
-验证局里 29 帧 `source=-1:0 mixed=1` 的伤害（涉及 400 / 500 / 302 / 306 / 308 / 307 / 300 / 10）因此不再可能让卡片空白。`tests/test_core.cpp` 新增 `testNoBlankBestHitAfterAnyObservedDamage()`，用验证局 frames 983..1023 的真实数值回放。
+### 反解策略（用户给出的剪枝思路）
+
+1. **上界剪枝**：理论满段伤害 + 容差 < 观测 combo 总伤的候选，直接排除。
+2. **体术优先**：单发 body hit 解释最简单，打分加成；本 combo 真实活跃过的施法优先。
+3. **弹幕分情形**：逐 Hit 模拟 1/2/3/4/5/6/8/9/12/15/16/18/满段命中数；两段施法时把
+   第一段结束的 `comboRate` 与 HP 传给第二段。
+4. **combo 硬约束**：同时匹配累计伤害与 `comboHits`（±1）；残差超过
+   `max(24, 4%×target, 12%×target)` 视为无解并返回 invalid，HUD 才退回通用兜底。
+
+### 真实日志数值回放（`.research/cleista/verify2.py` 本地复刻，与 C++ 同逻辑）
+
+| 观测 combo | hits | 反解 | 主招贡献 |
+|---|---|---|---|
+| 2280 | 18 | 单招 5C ×18 | 5C 2280 |
+| 3057 | 19 | 5C ×18 + j.6A ×1 | 5C 2280（j.6A 775） |
+| 1200 | 1 | 单招 j.6A | j.6A 1200 |
+| 578 | 4 | 单招 6C ×4 | 6C 578 |
+| 1244 | 9 | 5C ×9 | 5C 1264 |
+| 1928 | 15 | 5C ×15 | 5C 1966 |
+| 2763 / 2832 | 16 / 17 | 5C ×15 + j.6A ×1 | 5C 1966 |
+| 5000 | 25 | **无合理解释**（残差 1443） | 不显示招式 |
+
+3057 被拆成 `2280 + 775` 而不是膨胀成单招；5000 这种算不出来的值明确放弃，不再硬凑
+`623C + 5C`。`tests/test_core.cpp` 的 `testDamageInferenceSuikaComboReplay()` 用内联的
+78 行萃香指纹固定以上行为。
+
+### 代码落点
+
+- `src/core/DamageInference.{hpp,cpp}`：`read / simulate / expectedDamage / solve`。
+- `HitAttributionResult::candidates`：mixed / unresolved 帧也带出「本帧真实活跃过的施法」
+  作为 evidence，而不是全表瞎猜。
+- `HitSnapshots.hpp` 读 `PLAYER+0x4B0` 的 `comboRate`，诊断日志写作 `crate=`。
+- `ModMain.cpp`：combo 起始记录 HP 与 evidence；对 `mixed || 无来源` 的伤害帧调用
+  `solve(comboAfter.damage)`；诊断日志新增 `profiles=`（指纹表加载条数，**0 表示表没随包
+  部署**）、`infer=`、`conf=`、`explain=`。
+- `RecordTracker::observeInferred()` 只存推定记录，**不写 best_**；`composeHUD()` 四级：
+  已验证单招 → 推定招式（带 EST 标记，只显示该招贡献）→ `COMBO DAMAGE` 权威峰值 →
+  真没打中才显示「尚未记录命中」。
+- 打包链：CMake `install()` 与 `build.yml` 的 `$required` 都必须包含 `HitProfiles.tsv`，
+  否则实机读不到表会静默退回兜底，表现为「改了却没变化」。
 
 ## 第 4 次启动：用户 repro 被完整复现，前一版修复不够（10:08）
 
