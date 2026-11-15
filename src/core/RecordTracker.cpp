@@ -1,7 +1,7 @@
 #include "RecordTracker.hpp"
 #include <algorithm>
 namespace whm {
-void RecordTracker::reset() { casts_.clear(); best_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; }
+void RecordTracker::reset() { casts_.clear(); best_ = {}; mixedFallback_ = {}; active_ = {}; lastFrame_ = 0; lastHitFrame_ = 0; unattributedDamage_ = 0; }
 void RecordTracker::commit() { if (active_.damage > best_.damage) best_ = active_; active_ = {}; }
 void RecordTracker::finish() { commit(); }
 void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint64_t instance,
@@ -10,9 +10,13 @@ void RecordTracker::observeDamage(int damage,int action,unsigned frame,std::uint
     lastFrame_=frame;
     if(damage<=0)return;
     if(mixedSources) {
-        // E.g. delayed 5C + j6A: 3057 is their combined damage, not a 3057
-        // j6A nor a single 3057 "UNKNOWN MOVE". Preserve the last real best.
+        // The source cannot be divided into separate moves, but the damage
+        // really happened. Show an unassigned fallback IF no trustworthy
+        // single-move record exists; never claim it was all j6A, nor hide
+        // the entire "most damage" area when all hits are ambiguous.
         unattributedDamage_+=damage;
+        if(damage>mixedFallback_.damage)
+            mixedFallback_={damage,-1,false,false};
         return;
     }
     if(action<300||action>=690||!instance) {
