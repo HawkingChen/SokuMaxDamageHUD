@@ -103,12 +103,12 @@ __declspec(naked) inline void scriptedSettlementStub() {
   ret
  }
 }
-using SetAction = void (__thiscall *)(void*,short);
+using SetAction = bool (__thiscall *)(void*,short);
 using SetActionSequence = void (__thiscall *)(void*,short,short);
 inline SetAction originalAction=nullptr;
 inline SetActionSequence originalActionSequence=nullptr;
-inline void __fastcall setAction(void *self,void*,short action) {
- captureAction(self,action);originalAction(self,action);
+inline bool __fastcall setAction(void *self,void*,short action) {
+ captureAction(self,action);return originalAction(self,action);
 }
 inline void __fastcall setActionSequence(void *self,void*,short action,short sequence) {
  captureAction(self,action,sequence);originalActionSequence(self,action,sequence);

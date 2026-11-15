@@ -57,8 +57,8 @@ void * __fastcall fakeFactory(void*,void*,void*,void*,short action,float x,float
 void * __fastcall fakeRoot(void *self,void*,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
  return factoryCreate(nullptr,nullptr,nullptr,self,action,x,y,dir,layer,data,size);
 }
-void __fastcall fakeAction(void *self,void*,short action) {
- put(self,0x13c,static_cast<unsigned short>(action));
+bool __fastcall fakeAction(void *self,void*,short action) {
+ put(self,0x13c,static_cast<unsigned short>(action));return action>=300;
 }
 void __fastcall fakeActionSequence(void *self,void*,short action,short seq) {
  fakeAction(self,nullptr,action);put(self,0x13e,static_cast<unsigned short>(seq));
@@ -106,7 +106,7 @@ int main(int argc,char **argv){
  restore(patch);VirtualFree(code,0,MEM_RELEASE);
  originalAction=reinterpret_cast<SetAction>(&fakeAction);
  originalActionSequence=reinterpret_cast<SetActionSequence>(&fakeActionSequence);
- setAction(p1.data(),nullptr,614);
+ assert(setAction(p1.data(),nullptr,614));
  const auto spellCast=actors.get(0);
  assert(spellCast.valid()&&read<unsigned short>(p1.data(),0x13c)==614);
  setAction(p1.data(),nullptr,664);
@@ -123,6 +123,7 @@ int main(int argc,char **argv){
  objectCreate(parentObject.data(),nullptr,1010,123.5f,-17.25f,-1,2,nullptr,3);
  assert(events[count-1].creator==reinterpret_cast<std::uintptr_t>(parentObject.data()));
  assert(events[count-1].creatorGeneration==22&&events[count-1].parent==0&&creator==nullptr);
+ assert(!setAction(p1.data(),nullptr,0));
  end();auto oldCount=count;captureHit(bullet.data(),p2.data(),500);assert(count==oldCount);
  if(argc>1) {
   // Optional local integration check: map the real PE without executing its
