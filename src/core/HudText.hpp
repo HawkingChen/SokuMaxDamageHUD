@@ -18,7 +18,7 @@ enum class HudLanguage { Chinese = 0, Japanese = 1, English = 2 };
 enum class HudTextKey {
     PanelTitle, Strongest, StrongestNormal, Record, Hand, SpellMax,
     NoEffects, NoHand, NoSkill, NoRecord,
-    Theoretical, MatchBest, Weather, Unknown,
+    Theoretical, MatchBest, RecordIncomplete, RecordUnavailable, Weather, Unknown,
     SpecialType, SpellType, Guts, FirstHit,
     KeyCount
 };
@@ -40,6 +40,8 @@ inline constexpr HudTextEntry kHudTexts[] = {
     /* NoRecord    */ {"尚未记录命中", "ヒット記録なし", "NO HIT RECORDED"},
     /* Theoretical */ {"理论最大值 · 估算", "理論最大値・推定", "THEORETICAL MAX · ESTIMATE"},
     /* MatchBest   */ {"本局最高 · 命中", "この対戦の最大ダメージ", "MATCH BEST · HIT"},
+    /* RecordIncomplete */ {"存在未识别命中", "帰属不明のヒットあり", "UNASSIGNED HITS"},
+    /* RecordUnavailable */ {"伤害读取不可用", "ダメージ取得不可", "DAMAGE CAPTURE UNAVAILABLE"},
     /* Weather     */ {"天气", "天気", "WEATHER"},
     /* Unknown     */ {"未知", "不明", "UNKNOWN"},
     /* SpecialType */ {"必杀技", "必殺技", "SKILL"},

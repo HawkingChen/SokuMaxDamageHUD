@@ -55,8 +55,16 @@ template<class T>void put(void *p,unsigned o,T x){std::memcpy(static_cast<char*>
 void * __fastcall fakeFactory(void*,void*,void*,void*,short action,float x,float y,int dir,int layer,void*,unsigned size) {
  assert(action==1010&&x==123.5f&&y==-17.25f&&dir==-1&&layer==2&&size==3);return factoryResult;
 }
+unsigned lastFactory=999;
+template<unsigned I> void *__fastcall fakeIndexedFactory(void *self,void *edx,void *parent,void *ally,
+ short action,float x,float y,int dir,int layer,void *data,unsigned size) {
+ lastFactory=I;return fakeFactory(self,edx,parent,ally,action,x,y,dir,layer,data,size);
+}
+Factory fakeFactories[]={
+reinterpret_cast<Factory>(&fakeIndexedFactory<0>),reinterpret_cast<Factory>(&fakeIndexedFactory<1>),reinterpret_cast<Factory>(&fakeIndexedFactory<2>),reinterpret_cast<Factory>(&fakeIndexedFactory<3>),reinterpret_cast<Factory>(&fakeIndexedFactory<4>),reinterpret_cast<Factory>(&fakeIndexedFactory<5>),reinterpret_cast<Factory>(&fakeIndexedFactory<6>),reinterpret_cast<Factory>(&fakeIndexedFactory<7>),reinterpret_cast<Factory>(&fakeIndexedFactory<8>),reinterpret_cast<Factory>(&fakeIndexedFactory<9>),reinterpret_cast<Factory>(&fakeIndexedFactory<10>),reinterpret_cast<Factory>(&fakeIndexedFactory<11>),reinterpret_cast<Factory>(&fakeIndexedFactory<12>),reinterpret_cast<Factory>(&fakeIndexedFactory<13>),reinterpret_cast<Factory>(&fakeIndexedFactory<14>),reinterpret_cast<Factory>(&fakeIndexedFactory<15>),reinterpret_cast<Factory>(&fakeIndexedFactory<16>),reinterpret_cast<Factory>(&fakeIndexedFactory<17>),reinterpret_cast<Factory>(&fakeIndexedFactory<18>),reinterpret_cast<Factory>(&fakeIndexedFactory<19>)
+};
 void * __fastcall fakeRoot(void *self,void*,short action,float x,float y,int dir,int layer,void *data,unsigned size) {
- return factoryCreate(nullptr,nullptr,nullptr,self,action,x,y,dir,layer,data,size);
+ return factoryCreate<17>(nullptr,nullptr,nullptr,self,action,x,y,dir,layer,data,size);
 }
 bool __fastcall fakeAction(void *self,void*,short action) {
  put(self,0x13c,static_cast<unsigned short>(action));return action>=300;
@@ -123,7 +131,7 @@ int main(int argc,char **argv){
  assert(actors.get(0).id!=spellCast.id&&read<unsigned short>(p1.data(),0x13c)==614);
  // Native creator identity is carried through the original factory call,
  // even when the child's persistent parentObject is null.
- originalFactory=reinterpret_cast<Factory>(&fakeFactory);
+ originalFactories[17]=reinterpret_cast<Factory>(&fakeFactory);
  originalRoot=reinterpret_cast<Create>(&fakeRoot);originalObject=originalRoot;originalChild=originalRoot;
  rootCreate(p1.data(),nullptr,1010,123.5f,-17.25f,-1,2,nullptr,3);
  assert(events[count-1].kind==Event::Birth&&events[count-1].creator==reinterpret_cast<std::uintptr_t>(p1.data()));
@@ -150,16 +158,48 @@ int main(int argc,char **argv){
  whm::NativeAttribution sources;
  const auto attributed=sources.consume(delayed,reinterpret_cast<std::uintptr_t>(p1.data()));
  assert(attributed.size()==1&&attributed[0].damage==1650&&attributed[0].action==550&&attributed[0].instance);
+ // Every character has a distinct factory. Verify that each dispatch
+ // forwards to ITS own original, rather than only testing Marisa's factory.
+ assert(setAction(p1.data(),nullptr,561));
+ using FactoryHook=void *(__fastcall *)(void*,void*,void*,void*,short,float,float,int,int,void*,unsigned);
+ for(unsigned i=0;i<20;++i) {
+  originalFactories[i]=fakeFactories[i];
+  CreatorScope root(p1.data());
+  auto fn=reinterpret_cast<FactoryHook>(factoryHooks[i]);
+  fn(nullptr,nullptr,nullptr,p1.data(),1010,123.5f,-17.25f,-1,2,nullptr,3);
+  assert(lastFactory==i&&events[count-1].castAction==561);
+ }
+ // Meiling Fang Po: five separately allocated projectiles, ONE cast.
+ std::vector<whm::NativeEvent> waves;
+ const int damage[]={500,366,336,310,285};
+ for(unsigned i=0;i<5;++i) {
+  put(bullet.data(),0x350,1000u+i);
+  rootCreate(p1.data(),nullptr,1010,123.5f,-17.25f,-1,2,nullptr,3);
+  waves.push_back(events[count-1]);captureHit(bullet.data(),p2.data(),damage[i]);
+  waves.push_back(events[count-1]);
+ }
+ whm::NativeAttribution fangPo;
+ const auto five=fangPo.consume(waves,reinterpret_cast<std::uintptr_t>(p1.data()));
+ assert(five.size()==5);int total=0;
+ for(const auto &h:five){assert(h.action==561&&h.instance==five[0].instance);total+=h.damage;}
+ assert(total==1797);
  end();auto oldCount=count;captureHit(bullet.data(),p2.data(),500);assert(count==oldCount);
  if(argc>1) {
   // Optional local integration check: map the real PE without executing its
   // entry point, install all signature-checked patches, then restore them.
   HMODULE game=LoadLibraryExA(argv[1],nullptr,DONT_RESOLVE_DLL_REFERENCES);
   assert(game);
+  // Audit the assumption of shared projectile creator functions across
+  // ALL characters, separately from the per-character factory addresses.
+  for(const auto &row:updateSites) {
+   auto table=reinterpret_cast<void*>(reinterpret_cast<std::uintptr_t>(game)+row[0]-0x400000);
+   assert(read<std::uintptr_t>(table,17*4)==0x59b6c0);
+   assert(read<std::uintptr_t>(table,18*4)==0x5b8ed0);
+  }
   installed=false;assert(install(reinterpret_cast<std::uintptr_t>(game)));
   for(unsigned i=0;i<patches.size();++i) {
    auto &p=patches[i];
-   assert(*static_cast<unsigned char*>(p.site)==(i==4||i==5?0xe8:0xe9));
+   assert(*static_cast<unsigned char*>(p.site)==(i==3||i==4?0xe8:0xe9));
    restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
    if(p.bridge)VirtualFree(p.bridge,0,MEM_RELEASE);
   }
@@ -167,8 +207,12 @@ int main(int argc,char **argv){
    auto &p=updatePatches[i];assert(read<void*>(p.site,0)==updateHooks[i]);
    restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
   }
+  for(unsigned i=0;i<factoryPatches.size();++i) {
+   auto &p=factoryPatches[i];assert(read<void*>(p.site,0)==factoryHooks[i]);
+   restore(p);assert(std::memcmp(p.site,p.original.data(),p.length)==0);
+  }
   FreeLibrary(game);installed=false;
-  std::cout<<"All eight code signatures and twenty update slots: installation and restoration passed\n";
+  std::cout<<"All seven code signatures, twenty update and twenty factory slots: installation/restoration passed\n";
  }
  std::cout<<"Native hit amount/victim, null-parent creator chain, registers, flags, x87/SSE and displaced instruction passed\n";
 }

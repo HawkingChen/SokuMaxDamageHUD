@@ -61,6 +61,7 @@ struct PanelView {
     bool systemCursorVisible = true;
     std::vector<PanelEffect> effects;
     PanelCard strongest, record;
+    bool recordIncomplete=false, nativeAvailable=true;
     std::vector<PanelCard> hand;
 };
 
@@ -458,8 +459,8 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
             const auto value=card.damage>0?(card.approximate?L"≈":L"")+std::to_wstring(card.damage):L"—";
             const int numberSize=std::clamp(cardH/3,36,70);
             number(value,tx,y+72,tw,cardH-91,numberSize);
-            write(localized(focused?whm::HudTextKey::Theoretical:whm::HudTextKey::MatchBest),
-                tx,y+cardH-19,tw,15,10,faded,DT_CENTER);
+            write(localized(focused?whm::HudTextKey::Theoretical:!v.nativeAvailable?whm::HudTextKey::RecordUnavailable:v.recordIncomplete?whm::HudTextKey::RecordIncomplete:whm::HudTextKey::MatchBest),
+                tx,y+cardH-19,tw,15,10,(!focused&&(v.recordIncomplete||!v.nativeAvailable))?RGB(255,190,90):faded,DT_CENTER);
         };
         portraitCard(92+effectsH,v.strongest,v.suikaGiantActive?whm::HudTextKey::StrongestNormal:whm::HudTextKey::Strongest,whm::HudTextKey::NoSkill,true);
         portraitCard(100+effectsH+cardH,v.record,whm::HudTextKey::Record,whm::HudTextKey::NoRecord,false);
@@ -675,7 +676,7 @@ inline void paintStyledPanel(HWND window, const PanelView &v, const std::string 
         } else {
             write(L"—",x+98,102,248,49,46,faded,DT_CENTER);
         }
-        write(localized(focused?whm::HudTextKey::Theoretical:whm::HudTextKey::MatchBest),
+        write(localized(focused?whm::HudTextKey::Theoretical:!v.nativeAvailable?whm::HudTextKey::RecordUnavailable:v.recordIncomplete?whm::HudTextKey::RecordIncomplete:whm::HudTextKey::MatchBest),
               x+109,151,240,17,11,RGB(187,162,147),DT_CENTER);
     };
     highlight(224,v.suikaGiantActive ? whm::HudTextKey::StrongestNormal

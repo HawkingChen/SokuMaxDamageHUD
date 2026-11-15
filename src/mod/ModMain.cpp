@@ -38,8 +38,31 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <tuple>
+#include <utility>
 
 namespace {
+// The factory is character-specific. Check the ENTIRE pinned SokuLib roster
+// at compile time; testing one character cannot establish factory coverage.
+template<class> struct FactoryTable;
+template<class T,unsigned V> struct FactoryTable<SokuLib::v2::VTableGameObjectList<T,V>> {
+    static constexpr std::uintptr_t address=V;
+};
+using FactoryRoster=std::tuple<
+    SokuLib::v2::GameObjectList_Reimu,SokuLib::v2::GameObjectList_Marisa,
+    SokuLib::v2::GameObjectList_Sakuya,SokuLib::v2::GameObjectList_Alice,
+    SokuLib::v2::GameObjectList_Patchouli,SokuLib::v2::GameObjectList_Youmu,
+    SokuLib::v2::GameObjectList_Remilia,SokuLib::v2::GameObjectList_Yuyuko,
+    SokuLib::v2::GameObjectList_Yukari,SokuLib::v2::GameObjectList_Suika,
+    SokuLib::v2::GameObjectList_Udonge,SokuLib::v2::GameObjectList_Aya,
+    SokuLib::v2::GameObjectList_Komachi,SokuLib::v2::GameObjectList_Iku,
+    SokuLib::v2::GameObjectList_Tenshi,SokuLib::v2::GameObjectList_Sanae,
+    SokuLib::v2::GameObjectList_Chirno,SokuLib::v2::GameObjectList_Meirin,
+    SokuLib::v2::GameObjectList_Utsuho,SokuLib::v2::GameObjectList_Suwako>;
+template<std::size_t... I> constexpr bool factoryRosterMatches(std::index_sequence<I...>) {
+    return ((FactoryTable<std::tuple_element_t<I,FactoryRoster>>::address==whm::native::factorySites[I][0])&&...);
+}
+static_assert(factoryRosterMatches(std::make_index_sequence<std::tuple_size_v<FactoryRoster>>{}));
 // Native probe offsets must agree with the pinned x86 SokuLib layout.
 static_assert(offsetof(SokuLib::v2::GameObjectBase, HP)==0x184);
 static_assert(offsetof(SokuLib::v2::GameObjectBase, gameData)+offsetof(SokuLib::v2::GameObjectBase::GameInfo, owner)==0x168);
@@ -625,6 +648,8 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
                                      cardName(*own,card.id),true));
         if(view.hand.size()==5)break;
     }
+    view.recordIncomplete=g_record.unattributedDamage()>0;
+    view.nativeAvailable=whm::native::installed;
     const auto &best=g_record.best();
     const whm::RecordSource recordSource=whm::pickRecordSource(
         best,g_record.inferred(),g_record.comboPeak(),g_record.hasObservedDamage());
@@ -1242,12 +1267,12 @@ void loadSettings() {
     if(g_damageTraceFile.is_open())g_damageTraceFile.close();
     if(g_damageTraceEnabled) {
         g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
-        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.9; numerical inference disabled\n";
+        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.10; numerical inference disabled\n";
     }
     g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
     if(g_nativeTraceEnabled) {
         g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
-        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.9; projectile update-context tracking\n";
+        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.10; all-character factories and update contexts\n";
         else g_nativeTraceEnabled=false;
     }
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());

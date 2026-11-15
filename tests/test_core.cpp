@@ -1076,6 +1076,29 @@ static void testNativePerHitAttribution() {
     assert(feed({hit(800,1,500)},1)[0].action==-1);
 }
 
+// Real 0.5.9 failure: five HIT events were present but Meiling's factory
+// wasn't hooked, so every projectile lacked its BIRTH. Capture must precede
+// attribution; the game's 1797 combo total is not used as a substitute.
+static void testMeilingFangPoFiveProjectilesOneCast() {
+    using namespace whm;
+    NativeAttribution sources;RecordTracker record;
+    record.observeDamage(800,302,1,900);
+    const int damage[]={500,366,336,310,285};
+    const unsigned generation[]={90570942,90636487,90702028,90767550,90833095};
+    for(unsigned i=0;i<5;++i) {
+        NativeEvent birth;birth.kind=NativeEvent::Birth;
+        birth.object=300+i%3;birth.generation=generation[i];
+        birth.owner=birth.ally=birth.creator=100;
+        birth.cast=223;birth.castAction=561;birth.action=825;
+        NativeEvent hit=birth;hit.kind=NativeEvent::Hit;hit.victim=200;hit.damage=damage[i];
+        const std::array<NativeEvent,2> events={birth,hit};
+        for(const auto &h:sources.consume(events,100))
+            record.observeDamage(h.damage,h.action,10+i,h.instance);
+    }
+    assert(record.best().actionId==561&&record.best().damage==1797);
+    assert(record.unattributedDamage()==0);
+}
+
 static void testArchivedRoundRecordCannotBeRevokedByReusedCastID() {
     whm::RecordTracker r;
     r.observeDamage(1000,400,100,1,false,2000);
@@ -1089,6 +1112,7 @@ static void testArchivedRoundRecordCannotBeRevokedByReusedCastID() {
 }
 
 int main() {
+    testMeilingFangPoFiveProjectilesOneCast();
     testNativePerHitAttribution();
     testArchivedRoundRecordCannotBeRevokedByReusedCastID();
     testPanelLayouts();
