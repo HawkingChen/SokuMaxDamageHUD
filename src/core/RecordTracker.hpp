@@ -9,6 +9,9 @@ struct ActualRecord {
     int actionId = -1;
     bool attributed = false;
     bool isSpell = false;
+    // Set when this cast instance exceeded its move's theoretical ceiling:
+    // its identity is not trustworthy, so later hits stay unranked too.
+    bool rejected = false;
 };
 
 // A move reconstructed by simulating the ported damage formula against the
@@ -33,7 +36,9 @@ public:
     // mixedSources: the frame's delta may include multiple independent moves.
     // Do not rank that aggregate as a single move, even as UNKNOWN MOVE.
     void observeDamage(int damage, int action, unsigned frame, std::uint64_t instance,
-                       bool mixedSources = false);
+                       bool mixedSources = false, int damageCeiling = 0);
+    // Damage already accumulated for one cast instance (0 when unknown).
+    int castDamage(std::uint64_t instance) const;
     // The game's own combo counter is an AUTHORITATIVE damage observation that
     // does not depend on whether we can guess which cast caused it. Feed it on
     // every engine update so the panel can prove that damage really happened
@@ -63,6 +68,7 @@ private:
     void commit();
     std::map<std::uint64_t,ActualRecord> casts_;
     ActualRecord best_{}; // only ever assigned attributed single-cast records
+    std::uint64_t bestInstance_ = 0; // lets a rejected cast retract its record
     ActualRecord active_{};
     unsigned lastFrame_ = 0;
     unsigned lastHitFrame_ = 0;

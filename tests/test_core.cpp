@@ -850,6 +850,48 @@ static void testDamageInferenceSuikaComboReplay() {
     assert(whm::inferenceCanBeatRecord(3057,2280));
     assert(!whm::inferenceCanBeatRecord(1244,2280));
     assert(!whm::inferenceCanBeatRecord(2280,2280));  // equal cannot raise it
+    // Sanity ceilings used by RecordTracker, straight from Cleista data.
+    assert(catalog.maxNeutralDamage(9,414)==1107);   // j.5C = 150 x 8
+    assert(catalog.maxNeutralDamage(9,410)==2280);   // 5C = 150 x 18
+    assert(catalog.maxNeutralDamage(9,607)==4371);   // spell sc207
+    assert(catalog.maxNeutralDamage(9,9999)==0);
+    assert(catalog.maxNeutralDamage(-1,410)==0);
+}
+
+// DamageTrace.log 2026-11-15 12:20, frames 19484/19639: a spell's 2000+1500
+// was credited to j.5C (414, max 1107) and became "j.5C 3500" because
+// casts_[instance] had no upper bound at all.
+static void testRecordCeilingRejectsImpossibleCast() {
+    using namespace whm;
+    const int j5c=(1107*3)/2;   // 1660, same 1.5x rule as ModMain
+    const int fiveC=(2280*3)/2; // 3420
+    RecordTracker t;
+    t.observeDamage(500,300,10,1,false,750);        // clean 5A
+    assert(t.best().attributed&&t.best().actionId==300&&t.best().damage==500);
+    t.observeDamage(2000,414,20,28,false,j5c);
+    t.observeDamage(1500,414,30,28,false,j5c);
+    assert(t.best().actionId==300&&t.best().damage==500); // no j.5C 3500
+    assert(t.castDamage(28)==0);
+    t.observeDamage(300,414,40,28,false,j5c);        // stays rejected
+    assert(t.best().damage==500);
+    assert(t.unattributedDamage()==3800);
+    // If a bad cast had already written a record, rejecting it retracts it.
+    RecordTracker retract;
+    retract.observeDamage(900,414,10,55,false,j5c);
+    assert(retract.best().actionId==414&&retract.best().damage==900);
+    retract.observeDamage(1000,414,20,55,false,j5c); // 1900 > 1660
+    assert(!retract.best().attributed);
+    // A legitimate 18-hit 5C stream must still rank normally.
+    RecordTracker stream;
+    stream.observeDamage(1244,410,10,7,false,fiveC);
+    stream.observeDamage(684,410,11,7,false,fiveC);
+    stream.observeDamage(352,410,12,7,false,fiveC);
+    assert(stream.best().attributed&&stream.best().actionId==410);
+    assert(stream.best().damage==2280);
+    // Legacy callers without a ceiling keep the old behaviour.
+    RecordTracker legacy;
+    legacy.observeDamage(2300,571,220,100);
+    assert(legacy.best().attributed&&legacy.best().damage==2300);
 }
 
 int main() {
@@ -865,6 +907,7 @@ int main() {
     testNoBlankBestHitAfterAnyObservedDamage();
     testSpellFollowupAttribution();
     testDamageInferenceSuikaComboReplay();
+    testRecordCeilingRejectsImpossibleCast();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
     assert(mergeSkillButtons("623B","j.623C")=="623B");

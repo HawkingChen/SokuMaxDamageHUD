@@ -1115,11 +1115,23 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
         g_comboOrigins.clear();
         g_comboActorAction=-1;
     }
+    // A cast cannot exceed its own move's measured full-hit damage. 1.5x
+    // leaves room for weather/attack/counter-hit multipliers but rejects the
+    // real-log case where a spell's 2000+1500 was credited to j.5C (max
+    // 1107) and became "j.5C 3500". A suspect identity is treated like an
+    // unresolvable one: reverse-solve the combo instead of trusting it.
+    const int srcAction=source.origin.action;
+    const int neutral=(srcAction>=300&&srcAction<690)
+        ? g_inference.maxNeutralDamage(static_cast<int>(attacker->characterIndex),srcAction)
+        : 0;
+    const int castCeiling=neutral>0?(neutral*3)/2:0;
+    const bool suspectCast=castCeiling>0&&dealt>0&&source.origin.valid()&&
+        g_record.castDamage(source.origin.instance)+dealt>castCeiling;
     // A single cast can never have dealt more than its combo's own total. If
     // that total is at or below the verified BEST HIT, no inferred cast could
     // raise the record, so reverse-solving this combo is pure wasted work.
     const int bestDamage=g_record.best().damage;
-    if(dealt>0 && (source.mixed||!source.origin.valid()) &&
+    if(dealt>0 && (source.mixed||!source.origin.valid()||suspectCast) &&
        comboAfter.damage>0 && g_inference.size()>0 &&
        whm::inferenceCanBeatRecord(comboAfter.damage,bestDamage) &&
        (comboStarted||mgr->frameCount-g_lastInferFrame>=6)) {
@@ -1151,7 +1163,7 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     // NEVER attribute the whole 5C + j6A (or other mixed-source) frame to
     // the sole detected contact, and never rank the aggregate as one move.
     g_record.observeDamage(dealt,source.origin.action,mgr->frameCount,
-                           source.origin.instance,source.mixed);
+                           source.origin.instance,source.mixed,castCeiling);
     // Authoritative, attribution-independent evidence that damage happened.
     // The game's own combo counter is read from the attacker, so it stays
     // correct even when HitAttribution cannot decide which cast caused a

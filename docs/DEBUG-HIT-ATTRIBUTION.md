@@ -2,6 +2,25 @@
 
 本文件适用于测试分支 `agent/gpt6-suika-overlap-diagnostics-20261115` 及其修复分支。只读观测游戏运行状态，不改变战斗伤害或操作。**不自动发布新 Release**。
 
+## 12:20 实机复验：符卡 3500 被误记为 j.5C（新 bug）
+
+推断版 DLL（`7c08df2b…`）实机日志 719 行 / 1 次启动 / 81 个伤害帧，`profiles=1677` 确认指纹表已加载。用户报告「用 4 卡发动，居然算在 J5C 造成 3500 伤害」。逐帧证据：
+
+```
+f19484  act=607>607 dealt=2000 combo=3:1892>1:2000 src=414:28 mixed=0 hits=1 poss=0 live=31 unres=9  best=410:2280
+f19639  act=5>5     dealt=1500 combo=1:2000>1:1500 src=414:28 mixed=0 hits=1 poss=1 live=44 unres=42 best=414:3500
+f30503  act=414>414 dealt=150  combo=18:2280>1:150 src=414:80 mixed=0  ← 真正打 j.5C，150/hit
+```
+
+- **不是推断器猜错**：`best=` 是 `RecordTracker` 的已验证单招记录。归因器把命中的唯一有身份弹幕（`414:28`）当成整帧来源并给 `mixed=0`，即使场上还有 9 / 42 个无主弹幕 —— `hits.size()==1 && !actorHit` 分支只检查 `possible`，不检查 orphan。
+- **记录层放大**：`RecordTracker::observeDamage()` 按 `instance` 累计 `casts_[instance]`，既无伤害上限也无时间窗，只有新回合才 `clear()`。相隔 155 帧的 `2000 + 1500 = 3500` 因此被算成同一次 j.5C 施法并写进 `best_`。而 Cleista 实测 j.5C（action 414）满段仅 **1107**（150×8），3500 物理上不可能。
+- **结构性修复（数据驱动，不动已验证通过的 5C/J6A 归因逻辑）**：
+  - `DamageInference::maxNeutralDamage(character, action)` 返回该招实测满段伤害；调用方按 1.5× 生成 `castCeiling`（覆盖天气 / 攻防 / 反击倍率）。
+  - `RecordTracker::observeDamage` 增加 `damageCeiling`：累计越界即把该 instance 永久标记 `rejected`，本帧及其后续帧只累加到 `unattributedDamage()`；若它已写过 `best_`，用 `bestInstance_` 撤回该记录。
+  - `ModMain.cpp` 把「该 instance 即将越界」识别为 `suspectCast`，与 `mixed` 同等对待，触发 combo 反解（evidence 含角色当时的 607），不再信任错误身份。
+  - 回归测试 `testRecordCeilingRejectsImpossibleCast()` 用 2000/1500/1107/2280 回放；本地复刻 49/49 断言通过。
+- **诚实边界**：日志没有 born 级事件，尚不能断定符卡弹幕为什么继承 `414:28`（`born()` 的 300–399 继承或 `parentObject` 链皆有可能），所以这次**没有改归因器**，避免破坏 5C/J6A 已通过的修复。修复后不会再出现「j.5C 3500」这种错误招式；由于 BEST HIT 仍是 verified 优先，符卡 3500 会保持为观测到的连段伤害而非升为最痛单招。若要让符卡正确进榜，需加 per-object origin 诊断后定位 born 路径。
+
 ## 从「通用兜底」到「按伤害公式反解招式」（11:10 修正）
 
 > 10:30 版曾写下「**无法根治**：每一笔伤害都标出 100% 正确的招式名」，并据此只做

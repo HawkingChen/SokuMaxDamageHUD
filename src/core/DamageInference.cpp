@@ -101,6 +101,13 @@ const std::vector<MoveFingerprint> &DamageInference::forCharacter(int character)
     return byCharacter_[character];
 }
 
+int DamageInference::maxNeutralDamage(int character, int action) const {
+    int best = 0;
+    for (const auto &m : forCharacter(character))
+        if (m.action == action && m.neutralTotal > best) best = m.neutralTotal;
+    return best;
+}
+
 DamageInference::Simulation DamageInference::simulate(
     const MoveFingerprint &move, int hits, const InferenceState &state,
     double startRate, int startHP) const {

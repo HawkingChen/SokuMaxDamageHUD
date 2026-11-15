@@ -70,6 +70,9 @@ public:
     bool read(std::istream &in, std::vector<std::string> *errors = nullptr);
     std::size_t size() const { return moves_.size(); }
     const std::vector<MoveFingerprint> &forCharacter(int character) const;
+    // Largest measured full-hit damage for an action (all variants included).
+    // Used as a sanity ceiling: a cast cannot deal more than its own data.
+    int maxNeutralDamage(int character, int action) const;
 
     // Simulate k hits of one cast with the ported scaler and the calibrated
     // per-hit base. The calibration makes a FULL cast reproduce neutralTotal.
