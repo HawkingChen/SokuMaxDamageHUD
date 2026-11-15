@@ -197,7 +197,8 @@ std::string cardName(const SokuLib::v2::Player &player, unsigned short cardId) {
     if (!utf8.empty()) utf8.pop_back(); return utf8;
 }
 
-std::string actionName(const SokuLib::v2::Player &player, int action) {
+std::string actionName(const SokuLib::v2::Player &player, int action,
+                       int observedDamage = 0) {
     static const char *const normals[] = {
         "5A", "f5A", "6A", "2A", "3A", "DA", "j5A", "j6A", "j2A", "j8A"
     };
@@ -205,11 +206,27 @@ std::string actionName(const SokuLib::v2::Player &player, int action) {
     if (action >= 500 && action < 600) {
         int card=whm::skillCardForAction(static_cast<int>(player.characterIndex),action);
         bool air=(action-500)%5>=2;char button=(action-500)%5%2?'C':'B';
+        // A charged variant ("236[B]") shares its action id with the tap
+        // version ("236B"). DamageTrace.log 13:18: frame 648 dealt 880 and
+        // frame 956 dealt 2200, BOTH action=505 seq=2. The game exposes no
+        // charge flag, so choose the notation whose static damage best
+        // matches the measured hit. Keeping the bracket makes the charged
+        // variant visible on the BEST HIT card.
+        std::vector<whm::NotationCandidate> candidates;
+        std::string chosenName;
         for(const auto &m:g_staticMoves) {
             if(m.character!=static_cast<int>(player.characterIndex)||m.card!=card||m.notation.empty())continue;
             bool entryAir=m.notation.rfind("j.",0)==0;
-            if(entryAir==air&&m.notation.back()==button)return m.name+" · "+m.notation;
+            std::string cmd=m.notation;
+            cmd.erase(std::remove(cmd.begin(),cmd.end(),'['),cmd.end());
+            cmd.erase(std::remove(cmd.begin(),cmd.end(),']'),cmd.end());
+            if(entryAir!=air||cmd.empty()||cmd.back()!=button)continue;
+            candidates.push_back({m.notation,m.damage});
+            if(chosenName.empty())chosenName=m.name;
         }
+        if(!candidates.empty())
+            return chosenName+" · "+
+                   whm::pickNotationByDamage(candidates,observedDamage);
         if(card>=0)return cardName(player,static_cast<unsigned short>(card));
     }
     switch(action) {
@@ -239,6 +256,16 @@ std::array<std::string, 3> lookupNames(int character, int card,
                                        const std::string &fallback) {
     auto exact = g_moveNames.find(moveNameKey(character, card, lookup));
     if (exact != g_moveNames.end()) return exact->second.names;
+    // Charged variants ("236[B]") have no own MoveNames.tsv row. Reuse the
+    // localized name of the tap command instead of showing the Chinese
+    // fallback in every UI language; the bracket is added by the renderer.
+    if (lookup.find('[') != std::string::npos) {
+        std::string tap = lookup;
+        tap.erase(std::remove(tap.begin(), tap.end(), '['), tap.end());
+        tap.erase(std::remove(tap.begin(), tap.end(), ']'), tap.end());
+        auto it = g_moveNames.find(moveNameKey(character, card, tap));
+        if (it != g_moveNames.end()) return it->second.names;
+    }
     auto byCard = g_moveNames.find(moveNameKey(character, card, ""));
     if (byCard != g_moveNames.end()) return byCard->second.names;
     std::string safe = fallback;
@@ -264,10 +291,11 @@ struct MoveLabel {
     std::array<std::string, 3> names{};
     std::string notation, fallback;
 };
-MoveLabel labelForAction(const SokuLib::v2::Player &player, int action) {
+MoveLabel labelForAction(const SokuLib::v2::Player &player, int action,
+                         int observedDamage = 0) {
     const int character = static_cast<int>(player.characterIndex);
     const int card=whm::cardForAction(character,action);
-    const std::string raw = actionName(player, action);
+    const std::string raw = actionName(player, action, observedDamage);
     const std::string separator = " · "; // "·" is two UTF-8 bytes, not one
     const std::size_t cut = raw.rfind(separator);
     std::string fallback = cut == std::string::npos ? raw : raw.substr(0, cut);
@@ -576,7 +604,7 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
     if(best.attributed&&best.damage>0){
         const int action=best.actionId;
         const int card=whm::cardForAction(view.character,action);
-        const MoveLabel label=labelForAction(*own,action);
+        const MoveLabel label=labelForAction(*own,action,best.damage);
         PanelCard rec=makeCard(view.character,card,best.damage,
                                label.notation,label.notation,label.fallback,false);
         rec.names=label.names;
@@ -585,7 +613,7 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
         const int action=inferred.actionId;
         const int card=inferred.card>=0?inferred.card:
                        whm::cardForAction(view.character,action);
-        const MoveLabel label=labelForAction(*own,action);
+        const MoveLabel label=labelForAction(*own,action,inferred.damage);
         PanelCard rec=makeCard(view.character,card,inferred.damage,
                                label.notation,label.notation,label.fallback,true);
         rec.names=label.names;

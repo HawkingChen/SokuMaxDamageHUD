@@ -33,6 +33,14 @@ jobs:
             $p = Join-Path $root $name
             if (!(Test-Path -LiteralPath $p) -or (Get-Item -LiteralPath $p).Length -eq 0) { throw "Missing package file: $name" }
           }
+          # Charged variants must ship with the static table, or the HUD can
+          # never rank a 2200 charged Oni Spirit Bomb above a 1483 623 Gnome.
+          $chargedLines = @(Get-Content (Join-Path $root 'FrameData.txt') |
+            Where-Object { $_ -and !$_.StartsWith('#') -and $_.Contains('[') })
+          if ($chargedLines.Count -lt 100) { throw "Charged variants missing from FrameData.txt ($($chargedLines.Count))" }
+          if (!($chargedLines -match '^9\|skill\|104\|2200\|.*\|236\[B\]\|')) {
+            throw 'Missing charged Oni Spirit Bomb candidate in FrameData.txt'
+          }
           $data = [IO.File]::ReadAllBytes((Join-Path $root 'SokuMaxDamageHUD.dll'))
           if ($data.Length -lt 4096 -or $data[0] -ne 0x4d -or $data[1] -ne 0x5a) { throw 'Invalid PE/DLL header' }
           $pe = [BitConverter]::ToInt32($data, 0x3c)

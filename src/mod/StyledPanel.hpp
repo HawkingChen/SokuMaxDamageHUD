@@ -88,7 +88,12 @@ inline std::wstring panelCardLabel(const PanelCard &card, whm::HudLanguage lang,
     if (chosen.empty()) return missing;
     // Normals store their command as the "name" in the source spelling (j.2A).
     // cardDisplayName prints one ALL-CAPS command instead of "j.2A · J2A".
-    return panelWide(whm::cardDisplayName(chosen, card.notation));
+    std::wstring text = panelWide(whm::cardDisplayName(chosen, card.notation));
+    // A bracketed button means the charged variant. Label it explicitly so a
+    // 2200 charged Oni Spirit Bomb is never read as the 880 tap version.
+    if (whm::isChargedNotation(card.notation))
+        text += panelWide(whm::chargedSuffix(lang));
+    return text;
 }
 
 // Convert existing local card PNGs (icons/<character>-<card>.png) with the

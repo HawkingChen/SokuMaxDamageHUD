@@ -915,6 +915,35 @@ static void testRecordCeilingRejectsImpossibleCast() {
     assert(legacy.best().attributed&&legacy.best().damage==2300);
 }
 
+// Cleista lists charged variants as separate moves with a bracketed notation
+// ("236[B]"). Steam Deck DamageTrace.log 13:18 has action=505 seq=2 dealing
+// 880 (tap) at frame 648 and 2200 (charged) at frame 956: identical action
+// and sequence, NO charge flag. Damage is the only way to tell them apart.
+static void testChargedVariantLabels() {
+    using namespace whm;
+    assert(isChargedNotation("236[B]"));
+    assert(isChargedNotation("j.236[C]"));
+    assert(!isChargedNotation("236B"));
+    assert(std::string(chargedSuffix(HudLanguage::Chinese))=="（蓄力）");
+    assert(std::string(chargedSuffix(HudLanguage::Japanese))=="（溜め）");
+    assert(std::string(chargedSuffix(HudLanguage::English))==" (CHARGE)");
+    // Two equally strong charged buttons merge; the bracket must survive.
+    assert(mergeSkillButtons("236[B]","236[C]")=="236[B/C]");
+    assert(mergeSkillButtons("j.236[B]","j.236[C]")=="j.236[B/C]");
+    assert(mergeSkillButtons("236[B]","236[B]")=="236[B]");
+    assert(mergeSkillButtons("236B","236C")=="236B/C"); // tap unchanged
+    assert(cardDisplayName("元鬼玉","236[B]")=="元鬼玉 · 236[B]");
+    assert(cardDisplayName("元鬼玉","236B")=="元鬼玉 · 236B");
+    // Tap 880 / charged 2200 share action 505. Select by measured damage.
+    std::vector<NotationCandidate> oni={{"236B",880},{"236[B]",2200}};
+    assert(pickNotationByDamage(oni,2200)=="236[B]");
+    assert(pickNotationByDamage(oni,880)=="236B");
+    assert(pickNotationByDamage(oni,0)=="236B"); // no measurement -> legacy tap
+    assert(pickNotationByDamage({},2200).empty());
+    // An unrelated measured value still picks the closest real variant.
+    assert(pickNotationByDamage(oni,1900)=="236[B]");
+}
+
 int main() {
     testPanelLayouts();
     testHudRoundingModes();
@@ -929,6 +958,7 @@ int main() {
     testSpellFollowupAttribution();
     testDamageInferenceSuikaComboReplay();
     testRecordCeilingRejectsImpossibleCast();
+    testChargedVariantLabels();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");
     assert(mergeSkillButtons("623B","j.623C")=="623B");

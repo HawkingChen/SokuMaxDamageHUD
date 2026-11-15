@@ -2,6 +2,43 @@
 
 本文件适用于测试分支 `agent/gpt6-suika-overlap-diagnostics-20261115` 及其修复分支。只读观测游戏运行状态，不改变战斗伤害或操作。**不自动发布新 Release**。
 
+## 蓄力招式缺席「最痛必杀技」候选（13:18 实机反馈）
+
+用户：萃香把元鬼玉蓄满打出 **2200 最痛伤害**，但「最痛必杀技」卡片显示 **623 地灵-密-**（1483），
+明显更低；要求「蓄力后伤害更高的也应该计算进去，并且表明是蓄力版」。Cleista 页面也写了
+`j.236[C]` 蓄力元鬼玉逐 Hit **2000**、合计 **2200**。
+
+### 根因：两张表用途不同
+
+- `config/HitProfiles.tsv`（`DamageInference` 用）**早就有** `236[B]` / `j.236[C]` = 2200。
+- `config/FrameData.txt`（`g_staticMoves` → 「最痛必杀技」/ 资料卡用）**只有 tap 版**：
+  `9|skill|104|880|元鬼玉|236B|...` 等 4 行，一条蓄力版都没有。
+  候选池最大只有 `623C` 地灵-疏- 2035 / `623B` 地灵-密- 1483，所以 2200 永远排不上。
+- **游戏没有蓄力标志**。DamageTrace.log 同一局：
+  ```
+  frame=648  action=505>505 seq=2>2 dealt=880   ← tap
+  frame=956  action=505>505 seq=2>2 dealt=2200 ← 蓄满
+  ```
+  两者 action / sequence 完全相同，只有伤害不同；因此实机 BEST HIT 也只能靠伤害区分。
+
+### 修法
+
+1. **数据**：`.research/cleista/gen_charged_framedata.py` 从 20 角色 `moves.json` 取所有带 `[` 的
+   蓄力版，按 **Cleista 自己的 tap-vs-charged 对比**，只保留 `damage > tap` 的（用户要求），
+   共 217 行插到各自 tap 行之后，`FrameData.txt` 1373 → 1590 行。
+   萃香 4 条 `2200` 蓄力元鬼玉入选；`236[B]` card100（1311 < tap 1549）等更弱的蓄力版**不入选**。
+   修后萃香最强 skill 候选 = `2200 236[B/C] / j.236[B/C]`，超过 `623C` 2035。
+2. **蓄力标记**：`HudText.hpp` 新增 `isChargedNotation()` / `chargedSuffix()`（中「（蓄力）」、
+   日「（溜め）」、英「 (CHARGE)」），`panelCardLabel()` 对带 `[` 的卡片追加标签。
+   `mergeSkillButtons()` 支持 `236[B] + 236[C] -> 236[B/C]`，不再只显示 B 版。
+3. **实机卡片**：`actionName()` 增加 `observedDamage`，用 `pickNotationByDamage()` 在
+   tap(880) / charged(2200) 之间按实测伤害选 notation；BEST HIT 与推定卡都传实测值，
+   无实测值时仍返回 tap 版（保持旧行为）。`lookupNames()` 让蓄力版复用 tap 版的三语名，
+   英文界面不再回落成中文名。
+4. **部署**：`FrameData.txt` 必须随 DLL 一起更新——`deploy_run.py` 现在同步复制
+   `HitProfiles.tsv` / `FrameData.txt` / `MoveNames.tsv`，否则新候选不会生效。
+5. 本地复刻 16/16；新增 `testChargedVariantLabels()` 覆盖蓄力识别、标签、合并、按伤害选择。
+
 ## 数据源纠错：Cleista `summary.damage` 是「一次测量」，不是招式上限
 
 用户实机用萃香 **j.5C 打出 2280**，而 `soku.cleista.cc/framedata/suika` 写 j.5C = 1107。

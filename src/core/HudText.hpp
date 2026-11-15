@@ -7,7 +7,9 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
+#include <vector>
 
 namespace whm {
 
@@ -120,6 +122,45 @@ inline std::string cardDisplayName(const std::string &name,
     if (command.empty()) return caption;
     if (sameNotation(name, command)) return command;
     return caption + " · " + command;
+}
+
+// A bracketed button ("236[B]", "j.236[C]") is the FULLY CHARGED variant of
+// the same command. The game exposes no charge flag: DamageTrace.log has
+// action=505 seq=2 dealing 880 (tap) and 2200 (charged) with identical
+// action/sequence, so the two are only distinguishable by their damage.
+// Render the distinction explicitly instead of showing a bare "[B]".
+inline bool isChargedNotation(const std::string &notation) {
+    return notation.find('[') != std::string::npos;
+}
+inline const char *chargedSuffix(HudLanguage lang) {
+    static const char *const kSuffix[3] = {
+        "（蓄力）", "（溜め）", " (CHARGE)"};
+    const int i = static_cast<int>(lang);
+    return kSuffix[(i >= 0 && i < 3) ? i : 0];
+}
+
+struct NotationCandidate {
+    std::string notation;   // keeps the brackets for a charged variant
+    int damage = 0;         // static neutral damage of that variant
+};
+// Pick between the tap command and its charged variant by MEASURED damage.
+// DamageTrace.log 13:18: action=505 seq=2 dealt 880 (tap) at frame 648 and
+// 2200 (charged) at frame 956 -- identical action/sequence, no charge flag.
+// With no measured damage, keep the FIRST (tap) entry: callers that only
+// resolve a command name must behave exactly as before.
+inline std::string pickNotationByDamage(
+    const std::vector<NotationCandidate> &candidates, int observedDamage) {
+    if (candidates.empty()) return {};
+    if (observedDamage <= 0) return candidates.front().notation;
+    std::size_t best = 0;
+    int bestDelta = std::numeric_limits<int>::max();
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const int d = candidates[i].damage;
+        const int delta = observedDamage > d ? observedDamage - d
+                                             : d - observedDamage;
+        if (delta < bestDelta) { bestDelta = delta; best = i; }
+    }
+    return candidates[best].notation;
 }
 
 // Weather text is shown only when it can actually affect damage, and never

@@ -12,6 +12,15 @@ constexpr int skillCardForAction(int character,int action) {
 }
 inline std::string mergeSkillButtons(const std::string &a,const std::string &b) {
     if(a==b)return a;
+    // Charged variants keep the bracket: "236[B]" + "236[C]" -> "236[B/C]".
+    // Without this, both end in ']' and only the B version would be shown.
+    if(a.size()>=3&&b.size()>=3&&a.back()==']'&&b.back()==']') {
+        const std::string pa=a.substr(0,a.size()-2),pb=b.substr(0,b.size()-2);
+        const char ca=a[a.size()-2],cb=b[b.size()-2];
+        if(pa==pb&&((ca=='B'&&cb=='C')||(ca=='C'&&cb=='B')))
+            return pa+"B/C]";
+        return a;
+    }
     if(a.size()!=b.size()||a.empty()||a.substr(0,a.size()-1)!=b.substr(0,b.size()-1))return a;
     if((a.back()=='B'&&b.back()=='C')||(a.back()=='C'&&b.back()=='B'))return a.substr(0,a.size()-1)+"B/C";
     return a;
