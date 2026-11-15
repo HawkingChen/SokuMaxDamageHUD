@@ -497,10 +497,93 @@ static void testPanelLayouts() {
     assert(!pending.request(target,original,2200)); // bounded, no resize loop
 }
 
+// The 2026-11-15 run recorded AFTER the BEST HIT invariant fix reproduced
+// the user's complaint exactly: frames 101/102/103/119 were the FIRST hits
+// of a fresh session, all source=-1:0 mixed=1, and best stayed -1:0 (the
+// panel showed NO HIT RECORDED). Root cause was HitAttribution::born()
+// treating the tail of the SAME 5C bullet stream as orphan projectiles as
+// soon as the actor cancelled into j6A (307). Those bullets are one cast,
+// not a second independent damage source.
+static void testSuika5CStreamAfterJ6AKeepsItsCast() {
+    using namespace whm;
+    ActorContact shoot;shoot.action=410;shoot.animationFrame=12;
+    ActorContact jump;jump.action=307;jump.animationFrame=5;
+    ActorContact idle;
+    HitAttribution source;
+    ProjectileContact head{9001,0,101,0,1,0,false,true};
+    const auto cast=source.observeDetailed(shoot,shoot,{},{head});
+    assert(cast.origin.valid()&&cast.origin.action==410);
+
+    // 5C keeps emitting unparented bullets for ~25 frames while the owner is
+    // already in j6A. They must inherit the SAME 5C cast, never become
+    // orphans (which used to force mixed=1 and blank the BEST HIT).
+    std::vector<ProjectileContact> live{head};
+    for(int i=0;i<6;++i) {
+        ProjectileContact tail{static_cast<std::uintptr_t>(9100+i),0,
+                               static_cast<unsigned>(200+i),0,1,0,false,true};
+        std::vector<ProjectileContact> post=live;
+        post.push_back(tail);
+        const auto seen=source.observeDetailed(jump,jump,live,post);
+        assert(seen.unownedOrigins==0);
+        live.push_back(tail);
+    }
+    // Delayed 5C explosion: no actor box, no collision flag transition on
+    // the sampled frame, but the stream is the only credible source.
+    std::vector<ProjectileContact> exploding;
+    for(const auto &p:live){auto q=p;q.hitBoxes=true;q.limit=1;exploding.push_back(q);}
+    const auto landed=source.observeDetailed(idle,idle,live,exploding);
+    assert(landed.origin.valid()&&landed.origin.action==410&&!landed.mixed);
+
+    RecordTracker record;
+    record.observeDamage(2280,landed.origin.action,655,landed.origin.instance,
+                         landed.mixed);
+    assert(record.best().attributed&&record.best().actionId==410);
+    assert(record.best().damage==2280);
+
+    // j6A adds 777 on top (combo 18:2280>19:3057). A DIFFERENT origin has
+    // an active attack box this frame, so the frame stays mixed and 777 must
+    // NOT inflate 5C back to the bogus 3057 single-move record.
+    ActorContact body=jump;body.hitBoxes=true;body.collision=1;body.limit=2;
+    const auto overlap=source.observeDetailed(idle,body,exploding,exploding);
+    assert(overlap.mixed&&!overlap.origin.valid());
+    record.observeDamage(777,overlap.origin.action,662,
+                         overlap.origin.instance,overlap.mixed);
+    assert(record.best().damage==2280&&record.best().actionId==410);
+    assert(record.unattributedDamage()==777);
+}
+
+// Replay of the real overlap-first session (DamageTrace.log lines 982..1253)
+// with the FIXED attribution. The user's exact repro must never leave the
+// BEST HIT card blank, and 3057 must never be ranked as one 5C.
+static void testOverlapFirstSessionNeverBlank() {
+    using namespace whm;
+    struct Event { unsigned frame; int damage; int action; std::uint64_t instance; bool mixed; };
+    const Event events[] = {
+        {101,1244,410,1,false},  // combo 0:0>9:1244, now credited to 5C
+        {102,684,-1,0,true},
+        {103,835,-1,0,true},
+        {119,69,-1,0,true},
+        {424,2280,410,3,false}, // clean 5C 0:0>18:2280
+        {525,1200,307,4,false}, // clean j6A
+        {655,2280,410,5,false}, // overlap 5C head, now credited to 5C
+        {662,777,-1,0,true},    // j6A add-on, must stay mixed
+    };
+    RecordTracker record;
+    int unattributed=0;
+    for(const auto &e:events) {
+        record.observeDamage(e.damage,e.action,e.frame,e.instance,e.mixed);
+        assert(record.best().attributed&&record.best().actionId==410);
+        assert(record.best().damage>=1244); // never NO HIT RECORDED
+        if(e.mixed)unattributed+=e.damage;
+        assert(record.unattributedDamage()==unattributed);
+    }
+    assert(record.best().damage==2280);
+}
+
 // Replay of the two real Suika practice rounds captured in DamageTrace.log.
-// Every frame that actually dealt damage is here, in order, with its real
-// attribution result. This pins the fix to the observed hardware data rather
-// than to another synthetic guess about 5C+j6A.
+// Every frame that actually dealt damage is here, in order, with the
+// attribution result produced by the diagnostics build. It guards the
+// RecordTracker invariant that unresolvable frames never become a record.
 static void testSuikaDamageTraceReplay() {
     using namespace whm;
     struct Event { unsigned frame; int damage; int action; std::uint64_t instance; bool mixed; };
@@ -563,6 +646,8 @@ int main() {
     testDelayedBirthAndDormantProjectileSafety();
     testMixedDamageNeverBecomesBestRecord();
     testSuikaDamageTraceReplay();
+    testSuika5CStreamAfterJ6AKeepsItsCast();
+    testOverlapFirstSessionNeverBlank();
     testSpellFollowupAttribution();
     using namespace whm;
     assert(mergeSkillButtons("623B","623C")=="623B/C");

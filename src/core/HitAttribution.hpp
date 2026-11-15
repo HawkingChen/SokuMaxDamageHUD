@@ -51,8 +51,19 @@ class HitAttribution {
     std::map<std::uintptr_t,Tracked> endedParents_;
     std::uint64_t tick_ = 0;
     static constexpr std::uint64_t kParentGraceFrames = 90;
+    // Suika 5C keeps emitting its bullet stream AFTER the owner cancels into
+    // j6A (action 307). Those bullets belong to the SAME 5C cast, not to a
+    // second independent source. Remember the last shooting/special cast for a
+    // short window so the tail of one cast does not get split into "owned"
+    // and "orphan" halves and then wrongly vetoed as a mixed-source frame.
+    // DamageTrace.log: the last 5C cast frame is exactly 15 frames before
+    // the delayed hit in both overlap sessions. 60 frames covers that with
+    // margin without letting an unrelated later melee effect inherit it.
+    static constexpr std::uint64_t kRangedGraceFrames = 60;
     ActorContact previousActor_{};
     AttackOrigin actorOrigin_{};
+    AttackOrigin lastRangedOrigin_{};
+    std::uint64_t lastRangedTick_ = 0;
     std::uint64_t serial_ = 0;
     static bool contact(int now,int before,int limit,int oldLimit,int stop,int oldStop) {
         return (now==1||now==2||now==7) &&
@@ -76,10 +87,14 @@ class HitAttribution {
         else if(canonical!=canonicalAttackAction(previousActor_.action)||
                 restarted||reactivatedBase||!actorOrigin_.valid())
             actorOrigin_={canonical,++serial_};
+        if(attack&&canonical>=400&&actorOrigin_.valid()) {
+            lastRangedOrigin_=actorOrigin_;
+            lastRangedTick_=tick_;
+        }
         previousActor_=s;
         return actorOrigin_;
     }
-    AttackOrigin born(const ProjectileContact &s,AttackOrigin casting) const {
+    AttackOrigin born(const ProjectileContact &s,AttackOrigin casting) {
         if(s.parent) {
             const auto live=objects_.find(s.parent);
             if(live!=objects_.end()&&live->second.origin.valid())return live->second.origin;
@@ -94,12 +109,19 @@ class HitAttribution {
         // A delayed 5C projectile may spawn AFTER Suika has changed to j6A.
         // A newly seen bullet while its owner executes an A/melee normal
         // cannot be credited to that normal merely because it was current.
-        // Shooting normals (400+) and specials may legitimately create it.
-        if(casting.action<400)return {};
+        // But it IS still the tail of the immediately preceding shooting
+        // cast: DamageTrace.log shows the 5C stream keeps emitting bullets
+        // for ~25 frames after the actor switches to 307, and treating them
+        // as orphans made the whole frame "mixed" and blanked BEST HIT.
+        if(casting.action<400) {
+            if(lastRangedOrigin_.valid()&&
+               tick_-lastRangedTick_<=kRangedGraceFrames)return lastRangedOrigin_;
+            return {};
+        }
         return casting;
     }
 public:
-    void reset() { objects_.clear();endedParents_.clear();previousActor_={};actorOrigin_={};serial_=0;tick_=0; }
+    void reset() { objects_.clear();endedParents_.clear();previousActor_={};actorOrigin_={};lastRangedOrigin_={};lastRangedTick_=0;serial_=0;tick_=0; }
     HitAttributionResult observeDetailed(const ActorContact &before,const ActorContact &after,
                                          const std::vector<ProjectileContact> &pre,
                                          const std::vector<ProjectileContact> &post) {
@@ -196,6 +218,12 @@ public:
             // passive bullets. Earlier diagnostics wrongly vetoed every hit
             // merely because ANY other game object existed on screen.
             if(!actorHit) {
+                // A DIFFERENT origin with an active attack box this frame is
+                // a genuine second source (e.g. j6A adding 777 on top of the
+                // 5C stream). Do not credit that whole frame to the bullet's
+                // cast -- that is the 3057-inflation bug, not a single move.
+                for(const auto &candidate:possible)
+                    if(candidate!=hit){decision.mixed=true;return decision;}
                 decision.origin=hit;
                 return decision;
             }

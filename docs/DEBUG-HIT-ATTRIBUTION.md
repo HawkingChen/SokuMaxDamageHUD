@@ -2,6 +2,29 @@
 
 本文件适用于测试分支 `agent/gpt6-suika-overlap-diagnostics-20261115` 及其修复分支。只读观测游戏运行状态，不改变战斗伤害或操作。**不自动发布新 Release**。
 
+## 第 4 次启动：用户 repro 被完整复现，前一版修复不够（10:08）
+
+用户反馈「5C 和 J6A 重叠 3057 伤害，还是显示尚未命中」。上一版只把「未识别招式」改成空白，**没有让重叠命中产生真实招式记录**，等于没修。新日志（第 3 个 `# New run`，行 935 起）复现：
+
+```
+L982  frame=101 combo=0:0>9:1244    dealt=1244 source=-1:0 mixed=1 unresolved=32 best=-1:0
+L983  frame=102 combo=9:1244>15:1928 dealt=684  source=-1:0 mixed=1 best=-1:0
+L984  frame=103 combo=15:1928>16:2763 dealt=835 source=-1:0 mixed=1 best=-1:0
+L1000 frame=119 combo=16:2763>17:2832 dealt=69  source=-1:0 mixed=1 best=-1:0
+L1076 frame=424 combo=17:2832>18:2280 dealt=2280 source=410:3 mixed=0 best=410:2280  ← 补一次干净 5C 才有记录
+L1246 frame=655 combo=0:0>18:2280 dealt=2280 source=-1:0 mixed=1 best=-1:0
+L1253 frame=662 combo=18:2280>19:3057 dealt=777 source=-1:0 mixed=1 best=-1:0
+```
+
+**真正根因在归因层，不是显示层**：L960/L970（actor 处于 410）生成的 5C 弹幕带 `source=410:1 unresolved=0`；从 L975 起 actor 切到 307，但 **5C 弹幕流继续生成约 25 帧**。`HitAttribution::born()` 里 `if(casting.action<400)return {};` 把这批「同一招的后半段」全部判成无主弹幕，orphan 从 8 涨到 32。归因器于是把**同一个 5C 施法**误当成「两个独立来源」→ `mixed=1` → 整帧丢弃 → BEST HIT 空白。
+
+**第二次结构性修复**：
+- `HitAttribution` 记住最近一次射击/特殊施法（`canonical>=400`）的 origin，窗口 60 帧（实测最后一次 410 帧到延迟命中恰好 15 帧）。普通技（300–399）期间新出现的无父弹幕继承它，不再变 orphan。
+- `hits.size()==1 && !actorHit` 分支新增保护：若 `possible` 里有与 hit 不同的 origin（如 j6A 的活跃攻击框），仍判 `mixed`，防止 777 被算进 5C 变回 3057 膨胀。
+- `RecordTracker` 的「BEST HIT 只排名已验证单招」不变量保留不变。
+
+预期结果：重叠作为首击时 `frame=101/655` 归到 `410`，BEST HIT 显示 `5C 2280`；`frame=662` 的 777 保持 mixed 不排名。新增 `testSuika5CStreamAfterJ6AKeepsItsCast()` 与 `testOverlapFirstSessionNeverBlank()` 固定该行为。
+
 ## 实机日志结论（3 次启动，525 行，138 个伤害帧，已验证）
 
 `snapshot=0/0` 全程通过，弹幕列表 getter 正常，此前「读取失败」的推测不成立。角色 `char=9`（萃香）397 行、`char=2` 132 行。萃香两局真正造成伤害的 10 帧：
