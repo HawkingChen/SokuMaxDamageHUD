@@ -21,9 +21,13 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+## Local diagnostic builds
+
+Configure a separate Win32 build directory with `-DWHM_ENABLE_DIAGNOSTIC_LOGS=ON` and build the DLL there. Set the desired diagnostic switch to `1` in the mod's INI and restart the game. Each log file is limited to 8 MiB. When the next entry would exceed the limit, the file starts over with that entry. An existing oversized file starts over when diagnostics open it. Public builds leave the build option off, including on installations with old diagnostic switches enabled.
+
 ## Local image cache
 
-`src/core/GameAssets.hpp` implements bounded, read-only Tasofro archive access and 24/32-bit CV2-to-PNG conversion. The companion UI thread performs extraction before its first paint, outside `DllMain`, without calling game functions. Patch archives take precedence; existing PNG files are preserved. Only whitelisted card and weather paths can produce output filenames. Cache failures fall back to drawn icons and are summarized in `IconExtraction.log`.
+`src/core/GameAssets.hpp` implements bounded, read-only Tasofro archive access and 24/32-bit CV2-to-PNG conversion. The companion UI thread performs extraction before its first paint, outside `DllMain`, without calling game functions. Patch archives take precedence; existing PNG files are preserved. Only whitelisted card and weather paths can produce output filenames. Cache failures fall back to drawn icons. A local diagnostic build with `EnableIconExtractionTrace=1` records the extraction summary in `IconExtraction.log`.
 
 Resource format references: [shady-packer image reader/writer](https://github.com/enebe-nb/shady-packer/blob/master/src/Core/resource/image.cpp), [text format](https://github.com/enebe-nb/shady-packer/blob/master/src/Core/resource/text.cpp). The extractor is independently implemented and has no runtime dependency on those tools. Game archives and generated images are not covered by this project's MIT code license.
 

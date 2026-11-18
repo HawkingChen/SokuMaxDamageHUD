@@ -25,6 +25,7 @@
 #include "NativeEvents.hpp"
 #include "NativeRecording.hpp"
 #include "RollbackCallbacks.hpp"
+#include "DiagnosticLog.hpp"
 #include <memory>
 
 #include <windows.h>
@@ -103,10 +104,10 @@ unsigned g_lastInferFrame = 0;
 std::vector<int> g_comboOrigins;
 whm::InferenceResult g_lastInfer{};
 bool g_allowUnverifiedProbes = false;
-bool g_damageTraceEnabled = false;
-std::ofstream g_damageTraceFile;
-bool g_nativeTraceEnabled = false;
-std::ofstream g_nativeTraceFile;
+whm::DiagnosticLog g_damageTraceFile;
+whm::DiagnosticLog g_nativeTraceFile;
+bool g_layoutTraceEnabled = false;
+bool g_iconTraceEnabled = false;
 // Giuroll restores game memory after prediction. HUD state must participate
 // in that SAME transaction, including events captured before an outer process
 // returns. User preferences and graphics resources are deliberately excluded.
@@ -147,8 +148,10 @@ struct HudRollbackBridge {
         g_rollbackCore=s.core;g_lastFrame=s.lastPhase;
         g_captureBeforeHP=s.beforeHP;g_captureTarget=s.target;
         g_lastRefresh=0;++g_rollbackLoads;
-        if(g_nativeTraceFile)g_nativeTraceFile<<"# GIUROLL restore logical="<<logicalFrame
-            <<" pending="<<whm::native::count<<" consumed="<<whm::native::consumed<<"\n";
+        g_nativeTraceFile.record([&](auto &out) {
+            out<<"# GIUROLL restore logical="<<logicalFrame
+               <<" pending="<<whm::native::count<<" consumed="<<whm::native::consumed<<"\n";
+        });
     }
     static void restorePost(const Snapshot &s) {
         if(!applicable(s))return;
@@ -205,25 +208,25 @@ std::string dllFolder() {
 // Diagnostics only: never feed these unvalidated events into HUD records.
 void flushNativeEvents() {
     if(!g_nativeTraceFile || (!whm::native::count && !whm::native::dropped))return;
-    auto &out=g_nativeTraceFile;
-    for(unsigned i=0;i<whm::native::count;++i) {
-        const auto &e=whm::native::events[i];
-        out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":e.kind==whm::native::Event::Rebind?"REBIND":"ACTION")
-           <<" frame="<<e.frame<<" logic="<<e.logicFrame<<" object="<<std::hex<<e.object<<std::dec
-           <<":"<<e.generation<<" owner="<<std::hex<<e.owner
-           <<" ally="<<e.ally<<" victim="<<e.victim
-           <<" creator="<<e.creator<<std::dec<<":"<<e.creatorGeneration
-           <<" parent="<<std::hex<<e.parent<<" caller="<<e.caller<<std::dec
-           <<" action="<<e.action<<" seq="<<e.sequence<<" box="<<e.boxAction
-           <<" ownerAction="<<e.ownerAction<<" victimAction="<<e.victimAction
-           <<" cast="<<e.cast<<":"<<e.castAction<<" path="<<e.path
-           <<" self="<<(e.owner==e.victim)<<" damage="<<e.damage
-           <<" victimHP="<<e.hp<<" ownerHP="<<e.ownerHP
-           <<" combo="<<e.comboHits<<":"<<e.comboDamageBefore
-           <<" hpProtected="<<e.protectedHP<<"\n";
-    }
-    if(whm::native::dropped)out<<"DROPPED frame="<<whm::native::frame<<" count="<<whm::native::dropped<<"\n";
-    out.flush();
+    g_nativeTraceFile.record([](auto &out) {
+        for(unsigned i=0;i<whm::native::count;++i) {
+            const auto &e=whm::native::events[i];
+            out<<(e.kind==whm::native::Event::Hit?"HIT":e.kind==whm::native::Event::Birth?"BIRTH":e.kind==whm::native::Event::Rebind?"REBIND":"ACTION")
+               <<" frame="<<e.frame<<" logic="<<e.logicFrame<<" object="<<std::hex<<e.object<<std::dec
+               <<":"<<e.generation<<" owner="<<std::hex<<e.owner
+               <<" ally="<<e.ally<<" victim="<<e.victim
+               <<" creator="<<e.creator<<std::dec<<":"<<e.creatorGeneration
+               <<" parent="<<std::hex<<e.parent<<" caller="<<e.caller<<std::dec
+               <<" action="<<e.action<<" seq="<<e.sequence<<" box="<<e.boxAction
+               <<" ownerAction="<<e.ownerAction<<" victimAction="<<e.victimAction
+               <<" cast="<<e.cast<<":"<<e.castAction<<" path="<<e.path
+               <<" self="<<(e.owner==e.victim)<<" damage="<<e.damage
+               <<" victimHP="<<e.hp<<" ownerHP="<<e.ownerHP
+               <<" combo="<<e.comboHits<<":"<<e.comboDamageBefore
+               <<" hpProtected="<<e.protectedHP<<"\n";
+        }
+        if(whm::native::dropped)out<<"DROPPED frame="<<whm::native::frame<<" count="<<whm::native::dropped<<"\n";
+    });
 }
 
 void saveHudPreferences() {
@@ -738,6 +741,7 @@ std::vector<HudRow> composeHUD(const SokuLib::BattleManager *mgr) {
 
 // The panel is owned by the game window, but never takes keyboard focus.
 HWND g_panel = nullptr;
+HWND g_panelGame = nullptr;
 std::atomic<bool> g_panelWanted{false};
 std::vector<HudRow> g_panelRows;
 std::atomic<int> g_cursorLogicalX{-1}, g_cursorLogicalY{-1};
@@ -752,10 +756,11 @@ bool g_dockBaseline=false,g_bottomFitRequested=false;
 bool g_haveFullscreenBase=false,g_restoreFullscreen=false;
 whm::layout::FullscreenEntry g_fullscreenEntry;
 whm::layout::Rect g_fullscreenBase{},g_fullscreenMonitor{};
-std::ofstream g_layoutLog;
+whm::DiagnosticLog g_layoutLog;
 void traceLayout(const char *event,whm::layout::Rect r) {
-    if(!g_layoutLog.is_open())g_layoutLog.open(moduleFolder()/L"WindowLayout.log",std::ios::app);
-    if(g_layoutLog)g_layoutLog<<GetTickCount()<<" "<<event<<" "<<r.x<<","<<r.y<<" "<<r.w<<"x"<<r.h<<std::endl;
+    g_layoutLog.record([&](auto &out) {
+        out<<GetTickCount()<<" "<<event<<" "<<r.x<<","<<r.y<<" "<<r.w<<"x"<<r.h<<"\n";
+    });
 }
 void chooseDock(whm::layout::Dock dock,bool manual=true) {
     if(manual&&dock==whm::layout::Dock::Bottom){g_initialFit.allowLayoutSelection();g_bottomFitRequested=true;}
@@ -818,15 +823,44 @@ void beginDrag(HWND hwnd) {
 void endDrag(bool commit=true) {
     if(!g_dragging)return;
     g_dragging=false;ReleaseCapture();
-    SetWindowLongW(g_panel,GWL_EXSTYLE,GetWindowLongW(g_panel,GWL_EXSTYLE)&~WS_EX_LAYERED);
+    if(g_panel)SetWindowLongW(g_panel,GWL_EXSTYLE,GetWindowLongW(g_panel,GWL_EXSTYLE)&~WS_EX_LAYERED);
     if(g_dragGhost){DestroyWindow(g_dragGhost);g_dragGhost=nullptr;}
     if(g_dragBitmap){DeleteObject(g_dragBitmap);g_dragBitmap=nullptr;}
     if(commit){POINT p{};GetCursorPos(&p);
         chooseDock(whm::layout::nearestDock(whm::window::snapshot(SokuLib::window).outer,p.x,p.y));}
     g_lastPaint=0;
 }
-void pollPanelInput() {
-    const HWND game=SokuLib::window;
+void destroyPanel() {
+    endDrag(false);
+    if(g_panel) {
+        ShowWindow(g_panel,SW_HIDE);
+        DestroyWindow(g_panel);
+        g_panel=nullptr;
+    }
+    g_panelGame=nullptr;
+    g_lastPaint=0;
+    g_initialFit={};
+    g_dockBaseline=false;
+    g_fullscreenEntry={};
+    g_haveFullscreenBase=false;
+    g_restoreFullscreen=false;
+    g_bottomFitRequested=false;
+}
+
+DWORD syncPanelHost(HWND game) {
+    DWORD pid=0;
+    const auto owner=game?GetWindowThreadProcessId(game,&pid):0;
+    if(pid!=GetCurrentProcessId())game=nullptr;
+    if(game!=g_panelGame) {
+        // A game window can disappear before its process ends. Only the UI
+        // thread can tear down the HUD and an in-progress drag.
+        destroyPanel();
+        g_panelGame=game;
+    }
+    return game?owner:0;
+}
+
+void pollPanelInput(HWND game) {
     if(g_dragging) {
         if(!panelOwnsForeground(game)||!g_panelWanted.load()){endDrag(false);return;}
         if(GetTickCount()-g_dragStarted>160&&!(GetAsyncKeyState(VK_LBUTTON)&0x8000)){endDrag();return;}
@@ -874,6 +908,10 @@ void releaseCursorRestrictions() {
     }
 }
 LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    if(msg==WM_NCDESTROY && hwnd==g_panel) {
+        g_panel=nullptr;
+        endDrag(false);
+    }
     if (msg == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     if (msg == WM_SETCURSOR) {
         // The old window class had NO cursor; when the game hides the system
@@ -954,9 +992,7 @@ LRESULT CALLBACK panelProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
     }
     return DefWindowProcW(hwnd, msg, w, l);
 }
-void refreshPanel() {
-    HWND game = SokuLib::window;
-    if (!game || !IsWindow(game)) return;
+void refreshPanel(HWND game) {
     if (!g_panel) {
         WNDCLASSW cls{}; cls.lpfnWndProc = panelProc; cls.hInstance = g_module;
         cls.hCursor = arrowCursor();
@@ -1023,9 +1059,11 @@ void refreshPanel() {
     if(!g_collapsed&&!g_initialFit.used()) {
         g_bottomFitRequested=false;
         if(g_initialFit.apply(game,current.outer,planned.game,now)) {
-            if(g_layoutLog)g_layoutLog<<"fit-input game="<<current.outer.x<<","<<current.outer.y<<","<<current.outer.w<<","<<current.outer.h
-                <<" work="<<input.area.x<<","<<input.area.y<<","<<input.area.w<<","<<input.area.h
-                <<" dpi="<<whm::window::windowDpi(game)<<"/"<<whm::window::windowDpi(g_panel)<<std::endl;
+            g_layoutLog.record([&](auto &out) {
+                out<<"fit-input game="<<current.outer.x<<","<<current.outer.y<<","<<current.outer.w<<","<<current.outer.h
+                    <<" work="<<input.area.x<<","<<input.area.y<<","<<input.area.w<<","<<input.area.h
+                    <<" dpi="<<whm::window::windowDpi(game)<<"/"<<whm::window::windowDpi(g_panel)<<"\n";
+            });
             traceLayout("initial-fit",planned.game);ShowWindow(g_panel,SW_HIDE);return;
         }
     }
@@ -1045,9 +1083,11 @@ void refreshPanel() {
 
 DWORD WINAPI panelThread(void *) {
     const bool physical=whm::window::physicalThreadCoordinates();
-    if(!g_layoutLog.is_open())g_layoutLog.open(moduleFolder()/L"WindowLayout.log",std::ios::app);
-    if(g_layoutLog)g_layoutLog<<"SokuMaxDamageHUD 0.5.5 pid="<<GetCurrentProcessId()
-        <<" physical-thread="<<physical<<std::endl;
+    if(g_layoutTraceEnabled)g_layoutLog.open(moduleFolder()/L"WindowLayout.log");
+    g_layoutLog.record([&](auto &out) {
+        out<<"SokuMaxDamageHUD " WHM_VERSION " pid="<<GetCurrentProcessId()
+           <<" physical-thread="<<physical<<"\n";
+    });
     // Filesystem work runs outside DllMain and never calls into game code.
     // Finish before the first paint, whose bitmap cache remembers missing art.
     try {
@@ -1058,23 +1098,48 @@ DWORD WINAPI panelThread(void *) {
             const auto folder=std::filesystem::path(module).parent_path();
             const auto result=whm::assets::extractIcons(
                 std::filesystem::path(exe).parent_path(),folder/L"icons");
-            std::ofstream log(folder/L"IconExtraction.log",std::ios::trunc);
-            log << "archives=" << result.archives << " generated=" << result.written
-                << " preserved=" << result.preserved << " failed=" << result.failed << "\n";
+            if(g_iconTraceEnabled) {
+                whm::DiagnosticLog log;
+                log.open(folder/L"IconExtraction.log");
+                log.record([&](auto &out) {
+                    out<<"archives="<<result.archives<<" generated="<<result.written
+                       <<" preserved="<<result.preserved<<" failed="<<result.failed<<"\n";
+                });
+            }
         }
     } catch(const std::exception &) {
-        OutputDebugStringA("SokuMaxDamageHUD: icon extraction failed; using fallback icons.\n");
+        if(g_iconTraceEnabled)OutputDebugStringA("SokuMaxDamageHUD: icon extraction failed; using fallback icons.\n");
     }
-    SetTimer(nullptr, 0, 20, nullptr);
+    const auto timer=SetTimer(nullptr,0,20,nullptr);
+    if(!timer) {
+        g_layoutLog.close();
+        return 0;
+    }
+    DWORD gameThreadId=0;
+    HANDLE gameThread=nullptr;
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (msg.message == WM_TIMER) {
-            pollPanelInput();
-            const unsigned tick=GetTickCount();
-            if(!g_lastPaint||tick-g_lastPaint>=100){g_lastPaint=tick;refreshPanel();}
+        if(msg.message==WM_TIMER && !msg.hwnd && msg.wParam==timer) {
+            HWND game=SokuLib::window;
+            if(const auto owner=syncPanelHost(game)) {
+                if(owner!=gameThreadId) {
+                    if(gameThread)CloseHandle(gameThread);
+                    gameThread=OpenThread(SYNCHRONIZE,FALSE,owner);
+                    gameThreadId=owner;
+                }
+                pollPanelInput(game);
+                const unsigned tick=GetTickCount();
+                if(!g_lastPaint||tick-g_lastPaint>=100){g_lastPaint=tick;refreshPanel(game);}
+            }
+            if(gameThread && WaitForSingleObject(gameThread,0)==WAIT_OBJECT_0)break;
+            continue;
         }
         TranslateMessage(&msg); DispatchMessageW(&msg);
     }
+    KillTimer(nullptr,timer);
+    destroyPanel();
+    if(gameThread)CloseHandle(gameThread);
+    g_layoutLog.close();
     return 0;
 }
 
@@ -1150,7 +1215,7 @@ void drawCardIcon(const SokuLib::v2::Player &player, int cardId, int y) {
 int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     if(!g_rollbackAttached&&whm::GiurollBridge<HudRollbackBridge>::attach()) {
         g_rollbackAttached=true;
-        if(g_nativeTraceFile)g_nativeTraceFile<<"# Giuroll rollback callbacks attached\n";
+        g_nativeTraceFile.record([](auto &out) { out<<"# Giuroll rollback callbacks attached\n"; });
     }
     // Take the victim's HP before and after the engine's own update. Never write into game state.
     const int side = ownSide();
@@ -1209,7 +1274,7 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const int ownHPBefore=ownBefore->HP;
     const auto actorBefore=whm::actorContact(*ownBefore);
     whm::ProjectileSnapshotDiag projectilePreDiag;
-    const auto objectsBefore=g_damageTraceEnabled?whm::projectileContacts(*ownBefore,&projectilePreDiag):std::vector<whm::ProjectileContact>{};
+    const auto objectsBefore=g_damageTraceFile?whm::projectileContacts(*ownBefore,&projectilePreDiag):std::vector<whm::ProjectileContact>{};
     const auto comboBefore=whm::comboReading(*ownBefore,*targetBefore);
     g_captureBeforeHP=before;
     g_captureTarget=reinterpret_cast<std::uintptr_t>(targetBefore);
@@ -1217,7 +1282,7 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const auto rollbackBefore=g_rollbackLoads;
     const int result = (mgr->*g_originalProcess)();
     whm::native::end();
-    if(g_nativeTraceEnabled)flushNativeEvents();
+    flushNativeEvents();
     if (ownSide() != side || &SokuLib::getBattleMgr()!=mgr ||
         (SokuLib::sceneId!=SokuLib::SCENE_BATTLE && SokuLib::sceneId!=SokuLib::SCENE_BATTLESV && SokuLib::sceneId!=SokuLib::SCENE_BATTLECL)) {
         g_panelWanted.store(false);
@@ -1229,9 +1294,9 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     const auto *target=viewPlayer(mgr,1-side);
     whm::ProjectileSnapshotDiag projectilePostDiag;
     const auto actorAfter=whm::actorContact(*attacker);
-    const auto objectsAfter=g_damageTraceEnabled?whm::projectileContacts(*attacker,&projectilePostDiag):std::vector<whm::ProjectileContact>{};
+    const auto objectsAfter=g_damageTraceFile?whm::projectileContacts(*attacker,&projectilePostDiag):std::vector<whm::ProjectileContact>{};
     const auto comboAfter=whm::comboReading(*attacker,*target);
-    const auto source=g_damageTraceEnabled?g_hitAttribution.observeDetailed(
+    const auto source=g_damageTraceFile?g_hitAttribution.observeDetailed(
         actorBefore,actorAfter,objectsBefore,objectsAfter):whm::HitAttributionResult{};
     const int dealt=whm::observedDamage(before,after,comboBefore,comboAfter);
     // Actual records come only from per-hit engine events. HP/combos are
@@ -1247,49 +1312,49 @@ int __fastcall onProcess(SokuLib::BattleManager *mgr) {
     if(!pendingEvents.empty()||g_captureBeforeHP>after)g_rollbackCore.reset();
     // Opt-in local diagnostics. Snapshots corroborate native events; neither
     // the old contact heuristic nor numeric inference supplies a record.
-    if(g_damageTraceEnabled && g_damageTraceFile &&
+    if(g_damageTraceFile &&
        (dealt>0 || ownHPBefore!=attacker->HP ||
         (actorBefore.action!=actorAfter.action && (actorBefore.action>=600 || actorAfter.action>=600)) ||
         actorBefore.action==410 || actorAfter.action==410 ||
         (static_cast<int>(attacker->characterIndex)==9 &&
          (actorBefore.action==307 || actorAfter.action==307)))) {
-        auto &out=g_damageTraceFile;
-        out<<"frame="<<mgr->frameCount<<" rollback="<<(g_rollbackLoads-rollbackBefore)<<" char="<<static_cast<int>(attacker->characterIndex)
-           <<" action="<<actorBefore.action<<">"<<actorAfter.action
-           <<" seq="<<actorBefore.sequence<<">"<<actorAfter.sequence
-           <<" hp="<<before<<">"<<after<<" ownHP="<<ownHPBefore<<">"<<attacker->HP<<" dealt="<<dealt
-           <<" combo="<<comboBefore.hits<<":"<<comboBefore.damage
-           <<">"<<comboAfter.hits<<":"<<comboAfter.damage
-           <<" source="<<source.origin.action<<":"<<source.origin.instance
-           <<" mixed="<<source.mixed
-           <<" hits="<<source.detectedContacts
-           <<" possible="<<source.plausibleOrigins
-           <<" live="<<source.liveProjectiles
-           <<" unresolved="<<source.unownedOrigins
-           <<" snapshot="<<projectilePreDiag.status<<"/"<<projectilePostDiag.status
-           <<" list="<<projectilePreDiag.listCount<<"/"<<projectilePostDiag.listCount
-           <<" owned="<<projectilePreDiag.accepted<<"/"<<projectilePostDiag.accepted;
-        auto show=[&](const char *label,const std::vector<whm::ProjectileContact> &v){
-            out<<" "<<label<<"=[";
-            for(size_t i=0;i<v.size()&&i<16;++i) {
-                if(i)out<<";";
-                const auto &o=v[i];
-                out<<std::hex<<o.id<<":"<<o.parent<<std::dec
-                   <<":"<<o.generation<<":"<<o.collision<<":"
-                   <<o.limit<<":"<<o.hitBoxes;
-            }
-            if(v.size()>16)out<<";...";
-            out<<"]";
-        };
-        show("pre",objectsBefore);
-        show("post",objectsAfter);
-        out<<" crate="<<comboAfter.comboRate
-           <<" profiles="<<g_inference.size()
-           <<" infer="<<g_lastInfer.primaryAction<<":"<<g_lastInfer.primaryDamage
-           <<" conf="<<static_cast<int>(g_lastInfer.confidence*100)
-           <<" explain=["<<g_lastInfer.reason<<"]"
-           <<" best="<<g_record.best().actionId<<":"<<g_record.best().damage<<"\n";
-        out.flush();
+        g_damageTraceFile.record([&](auto &out) {
+            out<<"frame="<<mgr->frameCount<<" rollback="<<(g_rollbackLoads-rollbackBefore)<<" char="<<static_cast<int>(attacker->characterIndex)
+               <<" action="<<actorBefore.action<<">"<<actorAfter.action
+               <<" seq="<<actorBefore.sequence<<">"<<actorAfter.sequence
+               <<" hp="<<before<<">"<<after<<" ownHP="<<ownHPBefore<<">"<<attacker->HP<<" dealt="<<dealt
+               <<" combo="<<comboBefore.hits<<":"<<comboBefore.damage
+               <<">"<<comboAfter.hits<<":"<<comboAfter.damage
+               <<" source="<<source.origin.action<<":"<<source.origin.instance
+               <<" mixed="<<source.mixed
+               <<" hits="<<source.detectedContacts
+               <<" possible="<<source.plausibleOrigins
+               <<" live="<<source.liveProjectiles
+               <<" unresolved="<<source.unownedOrigins
+               <<" snapshot="<<projectilePreDiag.status<<"/"<<projectilePostDiag.status
+               <<" list="<<projectilePreDiag.listCount<<"/"<<projectilePostDiag.listCount
+               <<" owned="<<projectilePreDiag.accepted<<"/"<<projectilePostDiag.accepted;
+            auto show=[&](const char *label,const std::vector<whm::ProjectileContact> &v){
+                out<<" "<<label<<"=[";
+                for(size_t i=0;i<v.size()&&i<16;++i) {
+                    if(i)out<<";";
+                    const auto &o=v[i];
+                    out<<std::hex<<o.id<<":"<<o.parent<<std::dec
+                       <<":"<<o.generation<<":"<<o.collision<<":"
+                       <<o.limit<<":"<<o.hitBoxes;
+                }
+                if(v.size()>16)out<<";...";
+                out<<"]";
+            };
+            show("pre",objectsBefore);
+            show("post",objectsAfter);
+            out<<" crate="<<comboAfter.comboRate
+               <<" profiles="<<g_inference.size()
+               <<" infer="<<g_lastInfer.primaryAction<<":"<<g_lastInfer.primaryDamage
+               <<" conf="<<static_cast<int>(g_lastInfer.confidence*100)
+               <<" explain=["<<g_lastInfer.reason<<"]"
+               <<" best="<<g_record.best().actionId<<":"<<g_record.best().damage<<"\n";
+        });
     }
     if (mgr->frameCount - g_lastRefresh >= 12 || g_lastRefresh == 0) {
         g_lastRefresh = mgr->frameCount;
@@ -1332,18 +1397,20 @@ void loadSettings() {
     const auto folder=moduleFolder();
     const auto ini=folder/L"SokuMaxDamageHUD.ini";
     g_allowUnverifiedProbes = GetPrivateProfileIntW(L"Damage", L"EnableExperimentalFrameProbe", 0, ini.c_str()) != 0;
-    g_damageTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableDamageTrace", 0, ini.c_str()) != 0;
-    if(g_damageTraceFile.is_open())g_damageTraceFile.close();
-    if(g_damageTraceEnabled) {
-        g_damageTraceFile.open(folder/L"DamageTrace.log",std::ios::app);
-        if(g_damageTraceFile)g_damageTraceFile<<"\n# New run: native per-hit record build 0.5.12; numerical inference disabled\n";
-    }
-    g_nativeTraceEnabled = GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()) != 0;
-    if(g_nativeTraceEnabled) {
-        g_nativeTraceFile.open(folder/L"NativeDamageTrace.log",std::ios::app);
-        if(g_nativeTraceFile)g_nativeTraceFile<<"\n# Native per-hit build 0.5.12; native damage, helper commands, Giuroll state callbacks\n";
-        else g_nativeTraceEnabled=false;
-    }
+#ifdef WHM_ENABLE_DIAGNOSTIC_LOGS
+    if(GetPrivateProfileIntW(L"Damage", L"EnableDamageTrace", 0, ini.c_str()))
+        g_damageTraceFile.open(folder/L"DamageTrace.log");
+    g_damageTraceFile.record([](auto &out) {
+        out<<"\n# New run: " WHM_VERSION " native per-hit record; numerical inference disabled\n";
+    });
+    if(GetPrivateProfileIntW(L"Damage", L"EnableNativeSettlementTrace", 0, ini.c_str()))
+        g_nativeTraceFile.open(folder/L"NativeDamageTrace.log");
+    g_nativeTraceFile.record([](auto &out) {
+        out<<"\n# New run: " WHM_VERSION " native damage, helper commands, Giuroll state callbacks\n";
+    });
+    g_layoutTraceEnabled = GetPrivateProfileIntW(L"Diagnostics", L"EnableWindowLayoutTrace", 0, ini.c_str()) != 0;
+    g_iconTraceEnabled = GetPrivateProfileIntW(L"Diagnostics", L"EnableIconExtractionTrace", 0, ini.c_str()) != 0;
+#endif
     g_x = GetPrivateProfileIntW(L"HUD", L"X", g_x, ini.c_str());
     g_y = GetPrivateProfileIntW(L"HUD", L"Y", g_y, ini.c_str());
     g_w = std::max(170, std::min(400, static_cast<int>(GetPrivateProfileIntW(L"HUD", L"Width", g_w, ini.c_str()))));
@@ -1353,9 +1420,11 @@ void loadSettings() {
     const std::wstring chosen(language);
     g_language.store(chosen == L"JP" ? 1 : chosen == L"EN" ? 2 : 0);
     g_collapsed.store(GetPrivateProfileIntW(L"HUD", L"Collapsed", 0, ini.c_str()) != 0);
-    g_hidden.store(false);
-    // Startup is deliberately bottom/expanded; docking is per-session state.
-    g_dock=whm::layout::Dock::Bottom;g_vertical.store(false);g_collapsed.store(false);
+    g_hidden.store(GetPrivateProfileIntW(L"HUD", L"Hidden", 0, ini.c_str()) != 0);
+    const auto dock = GetPrivateProfileIntW(L"HUD", L"Dock", 0, ini.c_str());
+    g_dock = dock <= static_cast<unsigned>(whm::layout::Dock::Right)
+        ? static_cast<whm::layout::Dock>(dock) : whm::layout::Dock::Bottom;
+    g_vertical.store(g_dock != whm::layout::Dock::Bottom);
     g_autoFit=GetPrivateProfileIntW(L"HUD",L"AutoFit",1,ini.c_str())!=0;
     g_sideWidth=std::clamp<int>(GetPrivateProfileIntW(L"HUD",L"SideWidth",240,ini.c_str()),120,600);
     // 1602 sourced rows: character, card, notation, zh-CN, en, ja, source.
@@ -1414,11 +1483,12 @@ extern "C" __declspec(dllexport) bool Initialize(HMODULE self, HMODULE) {
     FlushInstructionCache(GetCurrentProcess(), nullptr, 0);
     whm::native::logicClock=reinterpret_cast<const unsigned*>(0x8985d8);
     const bool nativeOK=whm::native::install();
-    if(g_nativeTraceFile) {
-        g_nativeTraceFile<<"# nativeHooks="<<(nativeOK?"installed":"DISABLED: unsupported or modified code / allocation failure")<<"\n";
-        g_nativeTraceFile.flush();
-    }
-    if(g_damageTraceFile)g_damageTraceFile<<"# nativeHooks="<<nativeOK<<"; inferred move records disabled\n";
+    g_nativeTraceFile.record([&](auto &out) {
+        out<<"# nativeHooks="<<(nativeOK?"installed":"DISABLED: unsupported or modified code / allocation failure")<<"\n";
+    });
+    g_damageTraceFile.record([&](auto &out) {
+        out<<"# nativeHooks="<<nativeOK<<"; inferred move records disabled\n";
+    });
     HANDLE thread = CreateThread(nullptr, 0, panelThread, nullptr, 0, nullptr);
     if (thread) CloseHandle(thread);
     g_hooksInstalled = true;

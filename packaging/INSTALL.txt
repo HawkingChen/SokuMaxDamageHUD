@@ -8,10 +8,10 @@ https://github.com/HawkingChen/SokuMaxDamageHUD
 首次启动自动从本机游戏提取卡图，不需要另下素材或运行脚本。
 升级时先禁用旧版本并将旧目录移出 modules，避免重复加载。
 语言按钮循环 CN / JP / EN；方向按钮切换停靠；粗箭头收起，右下半透明＋展开。
-拖动非按钮区域显示静态预览，松开仅停靠下/左/右。默认从下方展开。下方明显越界才调整，左上角固定；全屏下方自动留位并整体居中，切左右恢复原大小。窗口模式移动游戏可自动换边。无快捷键。
+拖动非按钮区域显示静态预览，松开仅停靠下/左/右。启动时恢复上次的停靠和收起／隐藏状态。下方明显越界才调整，左上角固定；全屏下方自动留位并整体居中，切左右恢复原大小。窗口模式移动游戏可自动换边。无快捷键。
 支持窗口模式和 WindowResizer 无边框全屏。AutoFit=0 可禁用自动缩放。
 所有估算仅供参考；本 MOD 使用函数与虚表 Hook 采集事件，不修改战斗数值、网络封包或 RNG。
-诊断日志默认关闭，不影响 HUD 统计；修改日志开关后重启生效。
+发布版关闭诊断日志，HUD 统计照常运行。
 
 English
 1. Close the game. Put this SokuMaxDamageHUD folder in the game's modules folder.
@@ -20,10 +20,10 @@ Requires Hisoutensoku v1.10a and a working mod loader.
 Artwork is extracted from your local game on first launch; no extra download or script.
 Disable older copies and move their folders out of modules before upgrading.
 Cycle CN / JP / EN with one button; direction buttons dock; bold up collapses; translucent + expands.
-Drag a static preview and release to dock below/left/right. Starts below. Substantial overflow permits shrinking at a fixed top-left; fullscreen bottom refits and centers the group; selecting a side restores size. Windowed dragging can change sides automatically. No hotkeys.
+Drag a static preview and release to dock below/left/right. The last dock and collapsed or hidden state are restored on launch. Substantial overflow permits shrinking at a fixed top-left; fullscreen bottom refits and centers the group; selecting a side restores size. Windowed dragging can change sides automatically. No hotkeys.
 Use windowed or WindowResizer borderless fullscreen. AutoFit=0 disables automatic resizing.
 Damage values are estimates. Function/vtable hooks collect events without changing battle stats, packets or RNG.
-Diagnostic logging is OFF by default; HUD recording remains active. Restart after changing log settings.
+Diagnostic logging is disabled in the release build. HUD recording remains active.
 
 日本語
 1. ゲームを終了し、この SokuMaxDamageHUD フォルダーをゲームの modules に入れます。
@@ -32,10 +32,10 @@ Diagnostic logging is OFF by default; HUD recording remains active. Restart afte
 画像は初回起動時にローカルのゲームから抽出します。追加の素材やスクリプトは不要です。
 更新時は旧版を無効化し、旧フォルダーを modules の外へ移動してください。
 言語ボタンで CN / JP / EN 切替。方向ボタンで配置、太い上矢印で折りたたみ、半透明＋で展開。
-ドラッグ中は静止プレビュー、離すと下/左/右に配置。起動時は下部に表示。大きくはみ出す場合のみ左上を固定して縮小し、全画面の下部表示は自動で再配置・中央揃えし、左右表示では元のサイズに戻します。ウィンドウ移動時は自動で左右を切り替えます。ショートカットなし。
+ドラッグ中は静止プレビュー、離すと下/左/右に配置。起動時は前回の配置と折りたたみ・非表示状態を復元します。大きくはみ出す場合のみ左上を固定して縮小し、全画面の下部表示は自動で再配置・中央揃えし、左右表示では元のサイズに戻します。ウィンドウ移動時は自動で左右を切り替えます。ショートカットなし。
 ウィンドウまたは WindowResizer のボーダーレス全画面に対応。AutoFit=0 で自動縮小を無効化。
 ダメージは推定値です。関数・仮想関数テーブルの Hook でイベントを取得しますが、戦闘の数値・通信パケット・乱数は変更しません。
-診断ログは標準で無効です。HUD の記録は継続します。ログ設定変更後はゲームを再起動してください。
+リリース版では診断ログは無効です。HUD の記録は継続します。
 
 Direct SWRSToys: add under [Module] in your active SWRSToys.ini:
 SokuMaxDamageHUD=modules/SokuMaxDamageHUD/SokuMaxDamageHUD.dll
