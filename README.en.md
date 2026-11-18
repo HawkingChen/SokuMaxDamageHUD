@@ -48,7 +48,7 @@ Enable the DLL only once; avoid duplicate entries under different names.
 
 </details>
 
-**No separate artwork download is needed.** On the first launch, the mod extracts card and weather images from your local `th123a.dat` / `th123b.dat` / `th123c.dat` into its `icons` folder. It leaves the archives and existing images untouched, works offline, and needs no Python or extra script. If artwork is missing, check your game archives, write access to the mod folder, and `IconExtraction.log`. Text placeholders remain available if extraction fails.
+**No separate artwork download is needed.** On the first launch, the mod extracts card and weather images from your local `th123a.dat` / `th123b.dat` / `th123c.dat` into its `icons` folder. It leaves the archives and existing images untouched, works offline, and needs no Python or extra script. If artwork is missing, check your game archives, write access to the mod folder. Text placeholders remain available if extraction fails.
 
 To update, back up the old folder, close the game, and replace the files with the new version. To uninstall, disable the mod in your launcher, then delete its `SokuMaxDamageHUD` folder.
 
@@ -60,7 +60,7 @@ To update, back up the old folder, close the game, and replace the files with th
 - **Current hand**: estimated spell damage in hand order.
 - The **CN / JP / EN** button cycles languages. Two direction buttons switch to the other dock positions; the bold up button collapses the panel. A translucent **＋** inside the game’s bottom-right corner expands it. Preferences are saved automatically.
 
-**Window layouts (0.5.5 onward):** each launch starts expanded below the game. Use buttons or drag to choose bottom/left/right; no keyboard shortcuts. Portrait matches the game height without distorting artwork or text, with damage modifiers first and emphasized percentages/type multipliers.
+**Window layouts:** the panel restores its last dock and collapsed or hidden state at launch. Use buttons or drag to choose bottom/left/right; no keyboard shortcuts. Portrait matches the game height without distorting artwork or text, with damage modifiers first and emphasized percentages/type multipliers.
 
 Initial placement and explicit bottom selection shrink the game only for substantial bottom overflow. Windowed mode keeps the top-left fixed; fullscreen centers the game and HUD together. The client remains 4:3. The largest fitting size leaves about 8px clearance. Small overflow (about 24–48px) is tolerated to avoid sensitive side switching. Sidebars always attach outside the game and never move inside it.
 
